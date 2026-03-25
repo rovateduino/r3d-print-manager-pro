@@ -3,7 +3,7 @@ import axios from 'axios';
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import firebaseConfig from '../firebase-applet-config.json' assert { type: 'json' };
 
 // --- INICIALIZAÇÃO CORRIGIDA ---
 if (!getApps().length) {
