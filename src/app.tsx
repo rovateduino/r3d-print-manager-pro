@@ -1487,12 +1487,87 @@ const LicenseActivation = () => {
   );
 };
 
+// ─── Terms Modal ─────────────────────────────────────────────────────────────
+const TermsModal = ({ onClose }: { onClose: () => void }) => {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+    >
+      <div onClick={onClose} className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
+      <motion.div
+        initial={{ opacity: 0, scale: 0.9, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 20 }}
+        className="bg-[#1a1a1a] border border-white/10 w-full max-w-4xl rounded-[2.5rem] p-8 relative z-10 max-h-[85vh] flex flex-col"
+      >
+        <div className="flex justify-between items-center mb-6 shrink-0">
+          <h2 className="text-2xl font-black text-white">Termos de Uso e Política de Licenciamento</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-2">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+        <div className="overflow-y-auto pr-4 space-y-6 text-gray-300 text-sm leading-relaxed">
+          <p className="text-[#C67D3D] font-bold text-base">Última atualização: 26 de março de 2026</p>
+
+          <section>
+            <h3 className="text-lg font-bold text-white mt-4 mb-2">1. CONCESSÃO DE LICENÇA</h3>
+            <p>O Licenciante concede ao Licenciado uma licença pessoal, intransferível, não exclusiva e limitada para utilizar o Software R3D Print Manager Pro, em regime de uso perpétuo ou por período determinado, conforme o plano adquirido.</p>
+          </section>
+
+          <section>
+            <h3 className="text-lg font-bold text-white mt-4 mb-2">2. ATIVAÇÃO E VINCULAÇÃO (HWID)</h3>
+            <p>A ativação do Software ocorre mediante a inserção de uma chave de ativação vinculada permanentemente ao identificador único do seu computador (Hardware ID). A mesma chave não poderá ser utilizada em outro computador.</p>
+          </section>
+
+          <section>
+            <h3 className="text-lg font-bold text-white mt-4 mb-2">3. TESTE GRATUITO (TRIAL)</h3>
+            <p>Oferecemos um período de teste de 7 dias, limitado a um uso por Hardware ID e por endereço de e-mail. Após este período, o software será bloqueado até a aquisição de um plano.</p>
+          </section>
+
+          <section>
+            <h3 className="text-lg font-bold text-white mt-4 mb-2">4. PRIVACIDADE E DADOS</h3>
+            <p>O R3D Pro opera prioritariamente em modo offline. Seus dados de produção, custos e clientes são armazenados localmente em sua máquina e não são transmitidos para nossos servidores.</p>
+          </section>
+
+          <section>
+            <h3 className="text-lg font-bold text-white mt-4 mb-2">5. REEMBOLSO E CANCELAMENTO</h3>
+            <p>Devido à disponibilização do período de teste gratuito, reembolsos após a ativação da licença definitiva serão analisados individualmente conforme o Código de Defesa do Consumidor.</p>
+          </section>
+
+          <div className="bg-white/5 p-4 rounded-xl border border-white/10 mt-6">
+            <p className="text-xs text-gray-400 leading-relaxed">
+              Para ler o termo completo com todos os detalhes jurídicos, você pode acessar nossa página dedicada em: 
+              <a href="/termos.html" target="_blank" className="text-[#C67D3D] hover:underline ml-1 font-bold">r3dprintmanagerpro.com.br/termos-de-uso</a>
+            </p>
+          </div>
+
+          <p className="mt-6 text-xs text-gray-500 italic">
+            Ao prosseguir com a instalação e ativação do Software, o Licenciado confirma estar ciente e de acordo com todas as condições estabelecidas neste Termo de Uso.
+          </p>
+        </div>
+        <div className="mt-6 shrink-0">
+          <button
+            onClick={onClose}
+            className="w-full bg-gradient-to-r from-[#C67D3D] to-[#EA580C] text-white py-4 rounded-2xl font-black hover:brightness-110 transition-all shadow-lg shadow-[#C67D3D]/20"
+          >
+            ENTENDI E ACEITO OS TERMOS
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+};
+
 // ─── App Principal ────────────────────────────────────────────────────────────
 export default function App() {
   const [isAdminRoute, setIsAdminRoute] = useState(window.location.pathname === '/admin/cupons' || window.location.pathname === '/admin');
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [isTrialOpen, setIsTrialOpen] = useState(false);
+  const [isTermsOpen, setIsTermsOpen] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState({ name: '', price: '' });
 
   useEffect(() => {
@@ -1511,6 +1586,7 @@ export default function App() {
         {isCheckoutOpen && <CheckoutModal onClose={() => setIsCheckoutOpen(false)} plan={selectedPlan} />}
         {isGuideOpen && <GuideModal onClose={() => setIsGuideOpen(false)} />}
         {isTrialOpen && <TrialModal onClose={() => setIsTrialOpen(false)} />}
+        {isTermsOpen && <TermsModal onClose={() => setIsTermsOpen(false)} />}
       </AnimatePresence>
 
       {/* Hero */}
@@ -1694,9 +1770,9 @@ export default function App() {
             <div>
               <h4 className="text-white font-bold mb-6 text-sm uppercase tracking-widest">Legal</h4>
               <ul className="space-y-4 text-sm text-gray-500">
-                <li><a href="#" className="hover:text-[#C67D3D] transition-colors">Termos de Uso</a></li>
+                <li><button onClick={() => setIsTermsOpen(true)} className="hover:text-[#C67D3D] transition-colors">Termos de Uso</button></li>
                 <li><a href="#" className="hover:text-[#C67D3D] transition-colors">Privacidade</a></li>
-                <li><a href="#" className="hover:text-[#C67D3D] transition-colors">Licenciamento</a></li>
+                <li><button onClick={() => setIsTermsOpen(true)} className="hover:text-[#C67D3D] transition-colors">Licenciamento</button></li>
               </ul>
             </div>
           </div>
