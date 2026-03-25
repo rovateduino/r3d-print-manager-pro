@@ -285,73 +285,205 @@ if (url.match(/^\/api\/admin\/cupom\/[^\/]+$/) && method === 'PUT') {
       }
     }
 
-    // ── Asaas - Webhook ───────────────────────────────────────────────────────
-    if (url.includes('/api/asaas/webhook') && method === 'POST') {
-      const event = Array.isArray(req.body) ? req.body[0] : req.body;
-      const payment = event?.payment;
-      
-      if (!payment) {
-        return res.status(200).send('OK');
-      }
-      
-      res.status(200).send('OK');
-      
-      (async () => {
-        try {
-          if (event.event === 'PAYMENT_CONFIRMED' || event.event === 'PAYMENT_RECEIVED') {
-            const code = `R3D-ACT-${randomBytes(6).toString('hex').toUpperCase().match(/.{1,4}/g)?.join('-')}`;
-            const email = payment.customerEmail || 'cliente@email.com';
+   // ── Asaas: Webhook ─────────────────────────────────────────────────────────
+if (url.includes('/api/asaas/webhook') && method === 'POST') {
+  const event = Array.isArray(req.body) ? req.body[0] : req.body;
+  const payment = event?.payment;
+  
+  const webhookToken = req.headers['asaas-access-token'];
+  const isSimulated = webhookToken === 'SIMULATED_TOKEN';
+  const configuredToken = process.env.ASAAS_WEBHOOK_TOKEN;
+
+  console.log('[Webhook] Evento:', event?.event, 'Pagamento:', payment?.id, 'Simulado:', isSimulated);
+
+  if (configuredToken && !isSimulated && webhookToken !== configuredToken) {
+    console.warn('[Webhook] Token inválido');
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+
+  if (!payment) {
+    console.warn('[Webhook] Pagamento ausente');
+    return res.status(400).json({ message: 'Missing payment' });
+  }
+
+  // Resposta rápida para o Asaas
+  res.status(200).send('OK');
+
+  // Processamento assíncrono
+  (async () => {
+    try {
+      // Salva o pagamento
+      await firestoreRequest('PATCH', `payments/${payment.id}`, {
+        paymentId: payment.id,
+        status: payment.status,
+        event: event.event,
+        value: payment.value,
+        customer: payment.customer,
+        billingType: payment.billingType || '',
+        installmentNumber: payment.installmentNumber || 1,
+        processedAt: new Date().toISOString(),
+        externalReference: payment.externalReference || '',
+        isSimulated,
+      });
+
+      // Processa apenas pagamentos confirmados
+      if (event.event === 'PAYMENT_CONFIRMED' || event.event === 'PAYMENT_RECEIVED') {
+        const extRef = payment.externalReference || '';
+        const parts = extRef.split(':');
+        const hasCoupon = parts[0] === 'COUPON';
+        const couponCode = hasCoupon ? parts[1] : '';
+        const planName = hasCoupon
+          ? parts.slice(2, parts.length - 1).join(' ')
+          : parts.slice(1, parts.length - 1).join(' ');
+
+        const isFirstInstallment = (payment.installmentNumber || 1) === 1;
+
+        // Busca dados do cliente
+        let customerEmail = '';
+        let customerName = '';
+
+        if (isSimulated) {
+          customerEmail = payment.customerEmail || 'teste@exemplo.com';
+          customerName = payment.customerName || 'Cliente Teste';
+        } else {
+          try {
+            const cr = await axios.get(`${asaasUrl()}/customers/${payment.customer}`, {
+              headers: { access_token: process.env.ASAAS_API_KEY || '' }
+            });
+            customerEmail = cr.data.email || '';
+            customerName = cr.data.name || '';
+          } catch (e) {
+            console.error('Erro ao buscar cliente:', e);
+          }
+        }
+
+        // Gera código de ativação APENAS no primeiro pagamento
+        if (customerEmail && isFirstInstallment) {
+          // Verifica se já existe código para este pagamento
+          let existingCode = null;
+          try {
+            const existing = await firestoreRequest('GET', `activations_by_payment/${payment.id}`);
+            existingCode = existing?.code;
+          } catch (e) { /* não existe ainda */ }
+
+          let activationCode = existingCode;
+
+          if (!activationCode) {
+            // Gera código único
+            const randomPart = randomBytes(6).toString('hex').toUpperCase();
+            const formattedRandom = randomPart.match(/.{1,4}/g)?.join('-') || randomPart;
+            activationCode = `R3D-ACT-${formattedRandom}`;
             
-            await firestoreRequest('PATCH', `activations/${code}`, {
-              code, email, status: 'PENDING', createdAt: new Date().toISOString()
+            const expirationDate = new Date();
+            expirationDate.setDate(expirationDate.getDate() + 7);
+
+            // Salva ativação
+            await firestoreRequest('PATCH', `activations/${activationCode}`, {
+              code: activationCode,
+              paymentId: payment.id,
+              email: customerEmail,
+              name: customerName,
+              plano: planName || 'Mensal',
+              status: 'PENDING',
+              createdAt: new Date().toISOString(),
+              expiresAt: expirationDate.toISOString(),
             });
             
-            await sendEmail(email, 'Seu código de ativação R3D Pro', 
-              `<h1 style="color:#C67D3D">${code}</h1><p>Use este código para ativar sua licença.</p>`);
+            // Marca que este pagamento já gerou código
+            await firestoreRequest('PATCH', `activations_by_payment/${payment.id}`, {
+              code: activationCode,
+              paymentId: payment.id,
+            });
+            
+            console.log(`[Webhook] Código gerado: ${activationCode} para ${customerEmail}`);
           }
-        } catch (e) { console.error('Webhook error:', e); }
-      })();
-      return;
-    }
 
-    // ── Status do usuário ─────────────────────────────────────────────────────
-    if (url.includes('/api/user/status/') && method === 'GET') {
-      const email = decodeURIComponent(url.split('/api/user/status/')[1]);
-      try {
-        const user = await firestoreRequest('GET', `users/${email}`);
-        return res.json(user || { isPro: false });
-      } catch {
-        return res.json({ isPro: false });
-      }
-    }
+          // Atualiza usuário como PRO
+          await firestoreRequest('PATCH', `users/${customerEmail}`, {
+            email: customerEmail,
+            isPro: true,
+            subscriptionId: payment.installment || payment.id,
+            plano: planName,
+            updatedAt: new Date().toISOString(),
+          });
 
-    // ── Ativar licença ────────────────────────────────────────────────────────
-    if (url === '/api/license/activate' && method === 'POST') {
-      const { activationCode, hwid } = req.body;
-      if (!activationCode || !hwid) {
-        return res.status(400).json({ message: 'Código e HWID obrigatórios' });
-      }
-      
-      try {
-        const activation = await firestoreRequest('GET', `activations/${activationCode.toUpperCase()}`);
-        if (!activation || activation.status === 'USED') {
-          return res.status(400).json({ message: 'Código inválido ou já utilizado' });
+          // ENVIA E-MAIL COM O CÓDIGO (com log para debug)
+          const emailHtml = `
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+              <h2 style="color:#C67D3D">Parabéns pela sua compra! 🎉</h2>
+              <p>Olá ${customerName}, seu pagamento foi confirmado.</p>
+              <p>Aqui está seu código de ativação para o R3D Print Manager Pro:</p>
+              <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
+                <h1 style="color:#C67D3D;font-size:32px;margin:10px 0">${activationCode}</h1>
+                <p style="margin:0;color:#ccc;font-size:12px">Expira em 7 dias</p>
+              </div>
+              <p><strong>Instruções:</strong></p>
+              <ol>
+                <li>Baixe o aplicativo: <a href="https://r3dprintmanagerpro.com.br/api/download">Clique aqui para baixar</a></li>
+                <li>Abra o aplicativo e copie o Hardware ID (HWID)</li>
+                <li>Cole o HWID e este código no site para ativar</li>
+              </ol>
+              <p style="color:#ff4444"><strong>Atenção:</strong> Este código expira em 7 dias se não for utilizado.</p>
+              <p>Dúvidas? Responda este e-mail.</p>
+            </div>`;
+
+          const emailSent = await sendEmail(customerEmail, 'Seu código de ativação R3D Print Manager Pro', emailHtml);
+          console.log(`[Webhook] E-mail enviado para ${customerEmail}: ${emailSent ? 'sucesso' : 'falhou'}`);
         }
-        
-        await firestoreRequest('PATCH', `activations/${activationCode.toUpperCase()}`, {
-          status: 'USED', hwid, activatedAt: new Date().toISOString()
-        });
-        
-        await firestoreRequest('PATCH', `licenses/${hwid}`, {
-          hwid, plano: activation.plano || 'Mensal', activatedAt: new Date().toISOString()
-        });
-        
-        return res.json({ success: true, message: 'Licença ativada com sucesso!' });
-      } catch {
-        return res.status(404).json({ message: 'Código não encontrado' });
-      }
-    }
 
+        // Processa cupom de afiliado
+        if (couponCode && isFirstInstallment) {
+          try {
+            const coupon = await firestoreRequest('GET', `cupons/${couponCode.toUpperCase()}`);
+            if (coupon) {
+              const existingVendas = Array.isArray(coupon.vendas) ? coupon.vendas : [];
+              const installmentId = payment.installment || payment.id;
+              const jaProcessado = existingVendas.some((v: any) =>
+                v.installmentId === installmentId || v.paymentId === payment.id
+              );
+
+              if (!jaProcessado) {
+                const novaVenda = {
+                  paymentId: payment.id,
+                  installmentId,
+                  plano: planName || 'N/A',
+                  valor: payment.value,
+                  cliente: customerName,
+                  email: customerEmail,
+                  afiliado: coupon.afiliado_nome || '',
+                  data: new Date().toISOString(),
+                };
+
+                const updatedVendas = [...existingVendas, novaVenda];
+                const novosUsos = (Number(coupon.usos) || 0) + 1;
+
+                await firestoreRequest('PATCH', `cupons/${couponCode.toUpperCase()}`, {
+                  ...coupon,
+                  usos: novosUsos,
+                  vendas: updatedVendas,
+                });
+
+                if (coupon.afiliado_email) {
+                  await sendEmail(
+                    coupon.afiliado_email,
+                    `🎉 Nova venda com seu cupom ${coupon.codigo}!`,
+                    `<h3>Nova venda!</h3><p>Plano: ${planName}<br>Valor: R$ ${payment.value}<br>Cliente: ${customerEmail}</p>`
+                  );
+                }
+              }
+            }
+          } catch (e) {
+            console.error('Erro ao processar cupom:', e);
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error('[Webhook] Erro no processamento:', e);
+    }
+  })();
+  
+  return;
+}
     // ── Validar licença ───────────────────────────────────────────────────────
     if (url.includes('/api/license/validate') && method === 'GET') {
       const hwid = req.query?.hwid || url.split('hwid=')[1]?.split('&')[0];
