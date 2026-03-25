@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and subscription status",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email", "description": "User email" },
+        "name": { "type": "string", "description": "User full name" },
+        "isPro": { "type": "boolean", "description": "Whether the user has an active Pro subscription" },
+        "plan": { "type": "string", "enum": ["Mensal", "Trimestral", "Semestral", "Anual", "Vitalício"], "description": "Current active plan" },
+        "subscriptionId": { "type": "string", "description": "Asaas subscription or payment ID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account creation date" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update date" }
+      },
+      "required": ["email", "isPro"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Payment history log",
+      "type": "object",
+      "properties": {
+        "paymentId": { "type": "string", "description": "Asaas payment ID" },
+        "customerEmail": { "type": "string", "format": "email" },
+        "value": { "type": "number" },
+        "status": { "type": "string" },
+        "event": { "type": "string" },
+        "processedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["paymentId", "customerEmail", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{email}": {
+      "schema": "User",
+      "description": "Users indexed by email for easy lookup from webhooks"
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Log of received payment events"
+    }
+  }
+}

@@ -1,11 +1,14 @@
-<div align="center">
+# R3D Print Manager Pro
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Software de gestão completo exclusivo para empresas de impressão 3D. Orçamentos precisos, gestão de ROI e BI industrial.
 
-  <h1>Built with AI Studio</h2>
+## Estrutura do Projeto
 
-  <p>The fastest path from prompt to production with Gemini.</p>
-
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+- `/api`: Endpoints da API (Vercel)
+- `/public`: Arquivos estáticos públicos
+- `/src`: Código fonte da aplicação React
+- `/src/assets`: Imagens e logos
+- `/src/components`: Componentes reutilizáveis
+- `server.ts`: Servidor Express (Backend)
+- `vercel.json`: Configuração de deploy na Vercel
+- `vite.config.ts`: Configuração do Vite

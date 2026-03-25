@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: email (string)
+    // Fields:
+    //   - email: string (required, email format)
+    //   - name: string (optional)
+    //   - isPro: bool (required)
+    //   - plan: string (optional, enum)
+    //   - subscriptionId: string (optional)
+    //   - createdAt: string (optional, ISO 8601)
+    //   - updatedAt: string (optional, ISO 8601)
+    //
+    // Collection: payments
+    // Document ID: paymentId (string)
+    // Fields:
+    //   - paymentId: string (required)
+    //   - customerEmail: string (required, email format)
+    //   - value: number (optional)
+    //   - status: string (required)
+    //   - event: string (optional)
+    //   - processedAt: string (optional, ISO 8601)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(email) {
+      return isAuthenticated() && request.auth.token.email == email;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'admin' ||
+         (request.auth.token.email == "rovate.binance@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /users/{email} {
+      // Users can only read their own profile
+      allow read: if isOwner(email) || isAdmin();
+      
+      // Only the server (Admin SDK) or an admin user should create/update profiles
+      // In this app, the server will handle updates via the webhook.
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /payments/{paymentId} {
+      // Only admins can read/write payment logs
+      allow read, write: if isAdmin();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
