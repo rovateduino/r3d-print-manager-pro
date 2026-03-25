@@ -222,8 +222,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Admin: Atualizar cupom
     if (url.match(/^\/api\/admin\/cupom\/[^\/]+$/) && method === 'PUT') {
       if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const id = url.split('/').pop() as string;
-      if (!id) return res.status(400).json({ error: 'ID ausente' });
+      const idRaw = url.split('/').pop();
+      if (!idRaw || Array.isArray(idRaw)) {
+        return res.status(400).json({ error: 'ID inválido' });
+      }
+      const id = idRaw;
       const existing = await firestoreRequest('GET', `cupons/${id}`).catch(() => null);
       if (!existing) return res.status(404).json({ message: 'Cupom não encontrado' });
       await firestoreRequest('PATCH', `cupons/${id}`, { ...existing, ...req.body });
@@ -233,8 +236,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Admin: Excluir cupom
     if (url.match(/^\/api\/admin\/cupom\/[^\/]+$/) && method === 'DELETE') {
       if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const id = url.split('/').pop() as string;
-      if (!id) return res.status(400).json({ error: 'ID ausente' });
+      const idRaw = url.split('/').pop();
+      if (!idRaw || Array.isArray(idRaw)) {
+        return res.status(400).json({ error: 'ID inválido' });
+      }
+      const id = idRaw;
       await firestoreDelete('cupons', id);
       return res.json({ success: true });
     }
@@ -491,8 +497,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     if (url.includes('/api/admin/activation/reset/') && method === 'POST') {
       if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const code = (url.split('/reset/')[1]?.split('?')[0] || '') as string;
-      if (!code) return res.status(400).json({ message: 'Código inválido' });
+      const codeRaw = url.split('/reset/')[1]?.split('?')[0];
+      if (!codeRaw || Array.isArray(codeRaw)) {
+        return res.status(400).json({ message: 'Código inválido' });
+      }
+      const code = codeRaw;
       const activation = await firestoreRequest('GET', `activations/${code.toUpperCase()}`).catch(() => null);
       if (!activation) return res.status(404).json({ message: 'Ativação não encontrada' });
       await firestoreRequest('PATCH', `activations/${code.toUpperCase()}`, { status: 'AVAILABLE', usedAt: null, hwid: null });
@@ -506,16 +515,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     if (url.includes('/api/admin/license/delete/') && method === 'DELETE') {
       if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const hwid = (url.split('/').pop() || '') as string;
-      if (!hwid) return res.status(400).json({ message: 'HWID inválido' });
+      const hwidRaw = url.split('/').pop();
+      if (!hwidRaw || Array.isArray(hwidRaw)) {
+        return res.status(400).json({ message: 'HWID inválido' });
+      }
+      const hwid = hwidRaw;
       await firestoreDelete('licenses', hwid);
       return res.json({ success: true });
     }
     
     if (url.includes('/api/admin/activation/delete/') && method === 'DELETE') {
       if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const code = (url.split('/').pop() || '') as string;
-      if (!code) return res.status(400).json({ message: 'Código inválido' });
+      const codeRaw = url.split('/').pop();
+      if (!codeRaw || Array.isArray(codeRaw)) {
+        return res.status(400).json({ message: 'Código inválido' });
+      }
+      const code = codeRaw;
       await firestoreDelete('activations', code.toUpperCase());
       return res.json({ success: true });
     }
