@@ -13,8 +13,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), tailwindcss()],
     base: '/',
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      'import.meta.env.VITE_ASAAS_ENV': JSON.stringify(process.env.VITE_ASAAS_ENV || 'sandbox'),
+      'import.meta.env.VITE_ASAAS_ENV': JSON.stringify(env.VITE_ASAAS_ENV || 'sandbox'),
     },
     resolve: {
       alias: {
@@ -22,9 +21,17 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
+      proxy: {
+        '/api': {
+          target: 'http://localhost:3000',
+          changeOrigin: true,
+        }
+      }
     },
+    build: {
+      outDir: 'dist',
+      emptyOutDir: true,
+    }
   };
 });
