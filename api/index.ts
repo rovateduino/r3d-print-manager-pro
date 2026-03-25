@@ -960,6 +960,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } catch (e: any) { return res.status(500).json({ message: 'Erro ao gerar backup' }); }
     }
 
+    // ── ADMIN: LIMPAR DADOS DE TESTE (inclui cupons) ───────────────────────────
+    if (url === '/api/admin/clear-test-data' && method === 'DELETE') {
+      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
+      const collections = ['activations', 'payments', 'users', 'licenses', 'activations_by_payment', 'cupons', 'trials_hwid', 'trials_email'];
+      const results: any = {};
+      try {
+        for (const col of collections) {
+          const snapshot = await db.collection(col).get();
+          const batch = db.batch();
+          snapshot.docs.forEach(doc => batch.delete(doc.ref));
+          await batch.commit();
+          results[col] = { deleted: snapshot.size };
+        }
+        return res.json({ success: true, message: 'Dados de teste (incluindo cupons) removidos com sucesso.', results });
+      } catch (e: any) {
+        return res.status(500).json({ error: e.message });
+      }
+    }
+
     // ── SIMULAÇÃO DIRETA DE ATIVAÇÃO (para testes) ─────────────────────────────
     if (url === '/api/simulate-activation' && method === 'POST') {
       // Permite apenas em ambiente de teste ou via token especial
