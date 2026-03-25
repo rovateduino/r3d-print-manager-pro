@@ -1,52 +1,66 @@
-import { randomBytes } from 'crypto';
+import { createCipheriv, createHash, randomBytes } from 'crypto';
 import axios from 'axios';
 import { VercelRequest, VercelResponse } from '@vercel/node';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import firebaseConfig from '../firebase-applet-config.json';
 
-// ============================================================
-// CONFIGURAÇÃO DO FIRESTORE (COM DATABASE ID CORRETO)
-// ============================================================
+// --- INICIALIZAÇÃO CORRIGIDA ---
+if (!getApps().length) {
+  initializeApp({
+    credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}')),
+    projectId: firebaseConfig.projectId
+  });
+}
 
-const FIREBASE_PROJECT_ID = 'gen-lang-client-0364203262';
-const FIREBASE_DATABASE_ID = 'ai-studio-ee7c5fd5-11f5-4e50-a979-3316fea33a21';
-const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL || '';
-const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n') || '';
+// FORÇAR O DATABASE ID DO AI STUDIO EM TODA A API
+const db = getFirestore((firebaseConfig as any).firestoreDatabaseId || '(default)');
+
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId;
+const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
+const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+const DB_ID = process.env.DB_ID || firebaseConfig.firestoreDatabaseId || '(default)';
 
 let cachedToken: string | null = null;
 let tokenExpiry = 0;
 
 async function getToken() {
-  if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
-  
-  const header = { alg: 'RS256', typ: 'JWT' };
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: FIREBASE_CLIENT_EMAIL,
-    sub: FIREBASE_CLIENT_EMAIL,
-    scope: 'https://www.googleapis.com/auth/datastore',
-    aud: 'https://oauth2.googleapis.com/token',
-    iat: now,
-    exp: now + 3600,
-  };
+  try {
+    if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
+    const header = { alg: 'RS256', typ: 'JWT' };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      iss: FIREBASE_CLIENT_EMAIL,
+      sub: FIREBASE_CLIENT_EMAIL,
+      scope: 'https://www.googleapis.com/auth/datastore',
+      aud: 'https://oauth2.googleapis.com/token',
+      iat: now,
+      exp: now + 3600,
+    };
 
-  const sHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
-  const sPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const { sign } = await import('crypto');
-  const signature = sign('sha256', Buffer.from(`${sHeader}.${sPayload}`), FIREBASE_PRIVATE_KEY).toString('base64url');
+    const sHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
+    const sPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const { sign } = await import('crypto');
+    const signature = sign('sha256', Buffer.from(`${sHeader}.${sPayload}`), FIREBASE_PRIVATE_KEY!).toString('base64url');
 
-  const res = await axios.post('https://oauth2.googleapis.com/token', {
-    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-    assertion: `${sHeader}.${sPayload}.${signature}`,
-  });
+    const res = await axios.post('https://oauth2.googleapis.com/token', {
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: `${sHeader}.${sPayload}.${signature}`,
+    });
 
-  cachedToken = res.data.access_token;
-  tokenExpiry = Date.now() + 3500 * 1000;
-  return cachedToken;
+    cachedToken = res.data.access_token;
+    tokenExpiry = Date.now() + 3500 * 1000;
+    return cachedToken;
+  } catch (error: any) {
+    console.error('Error getting Firebase token:', error.response?.data || error.message);
+    throw error;
+  }
 }
 
-async function firestoreRequest(method: string, path: string, data?: any) {
+async function fsRequest(method: string, path: string, data?: any) {
   const token = await getToken();
-  let url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${FIREBASE_DATABASE_ID}/documents/${path}`;
-  
+  let url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${DB_ID}/documents/${path}`;
+
   if (method === 'PATCH' && data) {
     const fields = Object.keys(data);
     const mask = fields.map(f => `updateMask.fieldPaths=${f}`).join('&');
@@ -62,25 +76,48 @@ async function firestoreRequest(method: string, path: string, data?: any) {
   return decodeFields(res.data.fields || {});
 }
 
-async function firestoreList(collection: string) {
+async function fsList(collection: string) {
   const token = await getToken();
-  const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${FIREBASE_DATABASE_ID}/documents/${collection}`;
+  const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${DB_ID}/documents/${collection}`;
   try {
     const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+    console.log(`[Firestore] List ${collection}: found ${res.data.documents?.length || 0} docs`);
     return (res.data.documents || []).map((doc: any) => ({
       id: doc.name.split('/').pop(),
       ...decodeFields(doc.fields || {}),
     }));
   } catch (e: any) {
     if (e.response?.status === 404) return [];
+    console.error(`[Firestore] List ${collection} error:`, e.response?.data || e.message);
     throw e;
   }
 }
 
-async function firestoreDelete(collection: string, id: string) {
+async function fsGet(collection: string, id: string) {
+  try { return await fsRequest('GET', `${collection}/${id}`); }
+  catch (e: any) { if (e.response?.status === 404) return null; throw e; }
+}
+
+async function fsSet(collection: string, id: string, data: any) {
+  return fsRequest('PATCH', `${collection}/${id}`, data);
+}
+
+async function fsCreate(collection: string, id: string, data: any) {
+  return fsRequest('POST', `${collection}?documentId=${id}`, data);
+}
+
+async function fsDelete(collection: string, id: string) {
   const token = await getToken();
-  const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${FIREBASE_DATABASE_ID}/documents/${collection}/${id}`;
-  await axios.delete(url, { headers: { Authorization: `Bearer ${token}` } });
+  const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${DB_ID}/documents/${collection}/${id}`;
+  console.log(`[Firestore] Deleting ${collection}/${id}...`);
+  try {
+    const res = await axios.delete(url, { headers: { Authorization: `Bearer ${token}` } });
+    console.log(`[Firestore] Deleted ${collection}/${id} successfully`);
+    return res.data;
+  } catch (e: any) {
+    console.error(`[Firestore] Delete ${collection}/${id} error:`, e.response?.data || e.message);
+    throw e;
+  }
 }
 
 function encodeFields(obj: any): any {
@@ -102,6 +139,7 @@ function decodeFields(fields: any): any {
     const v: any = val;
     if ('stringValue' in v) obj[key] = v.stringValue;
     else if ('doubleValue' in v) obj[key] = Number(v.doubleValue);
+    else if ('integerValue' in v) obj[key] = Number(v.integerValue);
     else if ('booleanValue' in v) obj[key] = v.booleanValue;
     else if ('arrayValue' in v) obj[key] = (v.arrayValue.values || []).map((item: any) => decodeFields({ temp: item }).temp);
     else if ('mapValue' in v) obj[key] = decodeFields(v.mapValue.fields || {});
@@ -110,452 +148,882 @@ function decodeFields(fields: any): any {
   return obj;
 }
 
-async function sendEmail(to: string, subject: string, html: string): Promise<boolean> {
-  if (!process.env.RESEND_API_KEY) return false;
+async function sendEmail(to: string, subject: string, html: string) {
+  if (!process.env.RESEND_API_KEY) return console.warn('RESEND_API_KEY ausente');
   try {
     await axios.post('https://api.resend.com/emails', {
       from: 'R3D Pro <contato@r3dprintmanagerpro.com.br>',
       to, subject, html
     }, { headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` } });
-    return true;
-  } catch (e) { return false; }
+  } catch (e: any) { console.error('Erro Resend:', e.response?.data || e.message); }
 }
 
 const asaasUrl = () => process.env.ASAAS_ENV === 'production' ? 'https://api.asaas.com/v3' : 'https://sandbox.asaas.com/api/v3';
 
 function generateLicenseKey(payload: any) {
   const secret = process.env.KEYGEN_SECRET || 'R3D_SECRET_KEY_2026_XPTO_MANAGER';
-  const crypto = require('crypto');
-  const key = crypto.createHash('sha256').update(secret).digest();
+  const key = createHash('sha256').update(secret).digest();
   const iv = randomBytes(16);
-  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+  const cipher = createCipheriv('aes-256-cbc', key, iv);
   let encrypted = cipher.update(JSON.stringify(payload), 'utf8', 'hex');
   encrypted += cipher.final('hex');
   return `${iv.toString('hex')}:${encrypted}`;
 }
 
-// ============================================================
-// HANDLER PRINCIPAL
-// ============================================================
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-password, asaas-access-token');
-  
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  
   try {
     const url = req.url || '';
     const method = req.method || 'GET';
+    console.log(`[API] Request: ${method} ${url}`);
     const ADMIN_PASS = process.env.ADMIN_PASSWORD || 'admin123';
-    const isAdmin = req.headers['x-admin-password'] === ADMIN_PASS;
+    const clientPass = req.headers['x-admin-password'];
+    const isAdmin = clientPass === ADMIN_PASS;
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // HEALTH CHECK
-    // ──────────────────────────────────────────────────────────────────────────
-    if (url === '/api/health') {
+    if (url.includes('/admin/') && !isAdmin) {
+      console.warn(`[API] Unauthorized admin access attempt: ${method} ${url}`);
+    }
+
+    // ── Health ──────────────────────────────────────────────────────────────────
+    if (url.includes('/api/health')) {
       try {
-        await firestoreList('activations');
-        return res.json({ status: 'ok', firebase: true, databaseId: FIREBASE_DATABASE_ID, timestamp: new Date().toISOString() });
+        await getToken();
+        return res.json({ status: 'ok', firebase: true, dbId: DB_ID, asaasEnv: process.env.ASAAS_ENV || 'sandbox', hasApiKey: !!process.env.ASAAS_API_KEY, hasAdminPassword: !!process.env.ADMIN_PASSWORD });
       } catch (e: any) {
-        return res.json({ status: 'degraded', firebase: false, error: e.message });
+        const errorDetail = e.response?.data || e.message;
+        return res.json({
+          status: 'ok',
+          firebase: false,
+          dbId: DB_ID,
+          error: typeof errorDetail === 'object' ? JSON.stringify(errorDetail) : errorDetail,
+          config: {
+            hasProjectId: !!FIREBASE_PROJECT_ID,
+            hasClientEmail: !!FIREBASE_CLIENT_EMAIL,
+            hasPrivateKey: !!FIREBASE_PRIVATE_KEY
+          }
+        });
       }
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // ADMIN: LIMPAR DADOS DE TESTE (inclui cupons)
-    // ──────────────────────────────────────────────────────────────────────────
-    if (url === '/api/admin/clear-test-data' && method === 'DELETE') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const collections = ['activations', 'payments', 'users', 'licenses', 'activations_by_payment', 'cupons'];
-      const results: any = {};
-      for (const col of collections) {
-        const docs = await firestoreList(col);
-        for (const doc of docs) {
-          await firestoreDelete(col, doc.id);
-        }
-        results[col] = { deleted: docs.length };
-      }
-      return res.json({ success: true, message: 'Dados de teste (incluindo cupons) removidos com sucesso.', results });
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // CUPONS
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    // Validar cupom
+    // ── Validar cupom ───────────────────────────────────────────────────────────
     if (url.includes('/api/cupom/validar') && method === 'GET') {
       const codigo = req.query?.codigo || url.split('codigo=')[1]?.split('&')[0];
       if (!codigo) return res.status(400).json({ message: 'Código ausente' });
-      const coupon = await firestoreRequest('GET', `cupons/${String(codigo).toUpperCase()}`).catch(() => null);
-      if (!coupon?.ativo) return res.status(404).json({ message: 'Cupom inválido' });
-      if (coupon.limite_usos && coupon.usos >= coupon.limite_usos) {
-        return res.status(400).json({ message: 'Limite de usos atingido' });
-      }
-      if (coupon.validade && new Date(coupon.validade) < new Date()) {
-        return res.status(400).json({ message: 'Cupom expirado' });
-      }
-      return res.json({ id: codigo, ...coupon });
+      const coupon = await fsGet('cupons', String(codigo).toUpperCase());
+      if (!coupon || !coupon.ativo) return res.status(404).json({ message: 'Cupom inválido ou inativo' });
+      if (coupon.limite_usos && coupon.usos >= coupon.limite_usos) return res.status(400).json({ message: 'Limite de usos atingido' });
+      if (coupon.validade && new Date(coupon.validade) < new Date()) return res.status(400).json({ message: 'Cupom expirado' });
+      return res.json(coupon);
     }
 
-    // Admin: Listar cupons
-    if (url === '/api/admin/cupons' && method === 'GET') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      return res.json(await firestoreList('cupons'));
+    // ── Admin: Listar cupons ────────────────────────────────────────────────────
+    if (url.includes('/api/admin/cupons') && method === 'GET') {
+      if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
+      try { return res.json(await fsList('cupons')); }
+      catch (e: any) { return res.status(500).json({ message: 'Erro ao listar', error: e.message }); }
     }
 
-    // Admin: Criar cupom
-    if (url === '/api/admin/cupom/criar' && method === 'POST') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const data = req.body;
-      const codigo = String(data.codigo).toUpperCase().trim();
-      await firestoreRequest('PATCH', `cupons/${codigo}`, {
-        codigo, tipo: data.tipo || 'PERCENTUAL', valor: Number(data.valor) || 0,
-        afiliado_nome: data.afiliado_nome || '', afiliado_email: data.afiliado_email || '',
-        afiliado_telefone: data.afiliado_telefone || '', limite_usos: Number(data.limite_usos) || 0,
-        validade: data.validade || '', ativo: true, usos: 0, vendas: [], criado_em: new Date().toISOString(),
-      });
-      return res.json({ success: true });
-    }
-
-    // Admin: Atualizar cupom
-    if (url.match(/^\/api\/admin\/cupom\/[^\/]+$/) && method === 'PUT') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const lastPart = url.split('/').pop();
-      if (typeof lastPart !== 'string' || lastPart === '') {
-        return res.status(400).json({ error: 'ID inválido' });
-      }
-      const id = lastPart;
-      const existing = await firestoreRequest('GET', `cupons/${id}`).catch(() => null);
-      if (!existing) return res.status(404).json({ message: 'Cupom não encontrado' });
-      await firestoreRequest('PATCH', `cupons/${id}`, { ...existing, ...req.body });
-      return res.json({ success: true });
-    }
-
-    // Admin: Excluir cupom
-    if (url.match(/^\/api\/admin\/cupom\/[^\/]+$/) && method === 'DELETE') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const lastPart = url.split('/').pop();
-      if (typeof lastPart !== 'string' || lastPart === '') {
-        return res.status(400).json({ error: 'ID inválido' });
-      }
-      const id = lastPart;
-      await firestoreDelete('cupons', id);
-      return res.json({ success: true });
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // ASAAS
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    if (url === '/api/asaas/customer' && method === 'POST') {
+    // ── Admin: Criar cupom ──────────────────────────────────────────────────────
+    if (url.includes('/api/admin/cupom/criar') && method === 'POST') {
+      if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
       try {
-        const r = await axios.post(`${asaasUrl()}/customers`, req.body, {
-          headers: { access_token: process.env.ASAAS_API_KEY || '' }
+        const data = req.body;
+        const codigo = String(data.codigo).toUpperCase().trim();
+        await fsSet('cupons', codigo, {
+          codigo, tipo: data.tipo || 'PERCENTUAL', valor: Number(data.valor) || 0,
+          afiliado_nome: data.afiliado_nome || '', afiliado_email: data.afiliado_email || '',
+          afiliado_telefone: data.afiliado_telefone || '', limite_usos: Number(data.limite_usos) || 0,
+          validade: data.validade || '', ativo: data.ativo !== undefined ? data.ativo : true,
+          usos: 0, vendas: [], criado_em: new Date().toISOString(),
         });
-        return res.json(r.data);
-      } catch (e: any) {
-        return res.status(500).json({ error: e.response?.data || e.message });
-      }
+        if (data.afiliado_email) {
+          await sendEmail(data.afiliado_email, 'Seu cupom de afiliado foi criado!',
+            `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+              <h2 style="color:#C67D3D">Olá ${data.afiliado_nome}! 🎉</h2>
+              <p>Seu cupom foi criado no R3D Print Manager Pro!</p>
+              <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
+                <p style="margin:0;color:#999">Seu código:</p>
+                <h1 style="color:#C67D3D;font-size:36px;margin:10px 0">${codigo}</h1>
+                <p style="margin:0;color:#ccc">${data.tipo === 'PERCENTUAL' ? `${data.valor}% de desconto` : `R$ ${Number(data.valor).toFixed(2)} de desconto`}</p>
+              </div>
+              <p>Você receberá um e-mail a cada venda realizada com seu cupom.</p>
+            </div>`
+          );
+        }
+        return res.json({ success: true });
+      } catch (e: any) { return res.status(500).json({ message: 'Erro ao criar', error: e.message }); }
     }
 
-    if (url === '/api/asaas/payment' && method === 'POST') {
+    // ── Admin: Atualizar cupom ──────────────────────────────────────────────────
+    if (url.includes('/api/admin/cupom/') && !url.includes('/criar') && method === 'PUT') {
+      if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
+      const id = url.split('/api/admin/cupom/')[1]?.split('?')[0];
       try {
-        const r = await axios.post(`${asaasUrl()}/payments`, req.body, {
-          headers: { access_token: process.env.ASAAS_API_KEY || '' }
-        });
-        return res.json(r.data);
+        const existing = await fsGet('cupons', id);
+        await fsSet('cupons', id, { ...existing, ...req.body });
+        return res.json({ success: true });
+      } catch (e: any) { return res.status(500).json({ message: 'Erro ao atualizar', error: e.message }); }
+    }
+
+    // Excluir Cupom
+    if (req.method === 'DELETE' && req.url?.startsWith('/api/admin/cupom/')) {
+      if (!isAdmin) return res.status(401).json({ error: 'Não autorizado' });
+      try {
+        const id = String(req.url.split('/').pop()); // O String() resolve o erro TS2345
+        if (!id) return res.status(400).json({ error: 'ID ausente' });
+        await db.collection('cupons').doc(id).delete();
+        return res.status(200).json({ success: true });
       } catch (e: any) {
-        return res.status(500).json({ error: e.response?.data || e.message });
+        return res.status(500).json({ error: e.message });
       }
     }
 
+    // ── Asaas: Criar cliente ────────────────────────────────────────────────────
+    if (url.includes('/api/asaas/customer') && method === 'POST') {
+      try {
+        const r = await axios.post(`${asaasUrl()}/customers`, req.body, { headers: { access_token: process.env.ASAAS_API_KEY || '' } });
+        return res.json(r.data);
+      } catch (e: any) { return res.status(e.response?.status || 500).json(e.response?.data || { message: 'Erro ao criar cliente' }); }
+    }
+
+    // ── Asaas: Criar pagamento ──────────────────────────────────────────────────
+    if (url.includes('/api/asaas/payment') && method === 'POST') {
+      try {
+        const r = await axios.post(`${asaasUrl()}/payments`, req.body, { headers: { access_token: process.env.ASAAS_API_KEY || '' } });
+        return res.json(r.data);
+      } catch (e: any) { return res.status(e.response?.status || 500).json(e.response?.data || { message: 'Erro ao processar pagamento' }); }
+    }
+
+    // ── Asaas: PIX QR Code ──────────────────────────────────────────────────────
     if (url.includes('/api/asaas/pix-qrcode') && method === 'GET') {
       const paymentId = req.query?.paymentId || url.split('paymentId=')[1]?.split('&')[0];
       if (!paymentId) return res.status(400).json({ message: 'paymentId ausente' });
       try {
-        const r = await axios.get(`${asaasUrl()}/payments/${paymentId}/pixQrCode`, {
-          headers: { access_token: process.env.ASAAS_API_KEY || '' }
-        });
+        const r = await axios.get(`${asaasUrl()}/payments/${paymentId}/pixQrCode`, { headers: { access_token: process.env.ASAAS_API_KEY || '' } });
         return res.json(r.data);
-      } catch (e: any) {
-        return res.status(500).json({ error: e.response?.data || e.message });
-      }
+      } catch (e: any) { return res.status(e.response?.status || 500).json({ message: 'Erro ao buscar QR Code PIX' }); }
     }
 
-    // Webhook
+    // ── Asaas: Webhook ──────────────────────────────────────────────────────────
     if (url.includes('/api/asaas/webhook') && method === 'POST') {
-      const event = Array.isArray(req.body) ? req.body[0] : req.body;
+      const body = req.body;
+      const event = Array.isArray(body) ? body[0] : body;
       const payment = event?.payment;
-      if (!payment) return res.status(200).send('OK');
-      
+
+      const webhookToken = req.headers['asaas-access-token'];
+      const isSimulated = webhookToken === 'SIMULATED_TOKEN';
+      const configuredToken = process.env.ASAAS_WEBHOOK_TOKEN;
+
+      console.log(`[Webhook] Evento: ${event?.event}, Pagamento: ${payment?.id}, Simulado: ${isSimulated}`);
+
+      if (configuredToken && !isSimulated && webhookToken !== configuredToken) {
+        console.warn('[Webhook] Token inválido');
+        return res.status(401).json({ message: 'Unauthorized' });
+      }
+
+      if (!payment) {
+        console.warn('[Webhook] Pagamento ausente no corpo');
+        return res.status(400).json({ message: 'Missing payment' });
+      }
+
+      // Resposta rápida para o Asaas para evitar timeout
       res.status(200).send('OK');
-      
-      (async () => {
-        try {
-          await firestoreRequest('PATCH', `payments/${payment.id}`, {
-            paymentId: payment.id, status: payment.status, event: event.event,
-            value: payment.value, customer: payment.customer, processedAt: new Date().toISOString(),
-            externalReference: payment.externalReference || '',
-          });
 
-          if (event.event === 'PAYMENT_CONFIRMED' || event.event === 'PAYMENT_RECEIVED') {
-            const extRef = payment.externalReference || '';
-            const parts = extRef.split(':');
-            const hasCoupon = parts[0] === 'COUPON';
-            const couponCode = hasCoupon ? parts[1] : '';
-            const planName = hasCoupon ? parts.slice(2, parts.length - 1).join(' ') : parts.slice(1, parts.length - 1).join(' ');
-            const isFirstInstallment = (payment.installmentNumber || 1) === 1;
+      try {
+        // Usa a instância 'db' (Firebase Admin) em vez do REST
+        await db.collection('payments').doc(payment.id).set({
+          paymentId: payment.id,
+          status: payment.status,
+          event: event.event,
+          value: payment.value,
+          customer: payment.customer,
+          billingType: payment.billingType || '',
+          installmentNumber: payment.installmentNumber || 1,
+          processedAt: new Date().toISOString(),
+          externalReference: payment.externalReference || '',
+          isSimulated,
+        }, { merge: true });
 
-            let customerEmail = payment.customerEmail || '';
-            let customerName = payment.customerName || '';
+        if (event.event === 'PAYMENT_CONFIRMED' || event.event === 'PAYMENT_RECEIVED') {
+          const extRef = payment.externalReference || '';
+          const parts = extRef.split(':');
+          const hasCoupon = parts[0] === 'COUPON';
+          const couponCode = hasCoupon ? parts[1] : '';
+          const planName = hasCoupon
+            ? parts.slice(2, parts.length - 1).join(' ')
+            : parts.slice(1, parts.length - 1).join(' ');
 
-            if (!customerEmail && payment.customer) {
-              try {
-                const cr = await axios.get(`${asaasUrl()}/customers/${payment.customer}`, {
-                  headers: { access_token: process.env.ASAAS_API_KEY || '' }
-                });
-                customerEmail = cr.data.email || '';
-                customerName = cr.data.name || '';
-              } catch (e) {}
-            }
+          const installmentNumber = payment.installmentNumber || 1;
+          const isFirstInstallment = installmentNumber === 1;
 
-            if (customerEmail && isFirstInstallment) {
-              const activationCode = `R3D-ACT-${randomBytes(6).toString('hex').toUpperCase().match(/.{1,4}/g)?.join('-')}`;
+          let customerEmail = '';
+          let customerName = '';
+
+          if (isSimulated) {
+            customerEmail = payment.customerEmail || 'teste@exemplo.com';
+            customerName = payment.customerName || 'Cliente Teste';
+          } else {
+            try {
+              const cr = await axios.get(`${asaasUrl()}/customers/${payment.customer}`, {
+                headers: { access_token: process.env.ASAAS_API_KEY || '' }
+              });
+              customerEmail = cr.data.email || '';
+              customerName = cr.data.name || '';
+            } catch (e) { console.error('Erro ao buscar cliente:', e); }
+          }
+
+          if (customerEmail && isFirstInstallment) {
+            await db.collection('users').doc(customerEmail).set({
+              email: customerEmail,
+              isPro: true,
+              subscriptionId: payment.installment || payment.id,
+              plano: planName,
+              updatedAt: new Date().toISOString(),
+            }, { merge: true });
+
+            const actByPaySnap = await db.collection('activations_by_payment').doc(payment.id).get();
+            let generatedCode = null;
+
+            if (actByPaySnap.exists) {
+              generatedCode = actByPaySnap.data()?.code;
+            } else {
+              const code = `R3D-ACT-${randomBytes(6).toString('hex').toUpperCase().match(/.{1,4}/g)?.join('-')}`;
+              generatedCode = code;
               const expirationDate = new Date();
               expirationDate.setDate(expirationDate.getDate() + 7);
 
-              await firestoreRequest('PATCH', `activations/${activationCode}`, {
-                code: activationCode, paymentId: payment.id, email: customerEmail, name: customerName,
-                plano: planName || 'Mensal', status: 'PENDING', createdAt: new Date().toISOString(),
+              const activationData = {
+                code,
+                paymentId: payment.id,
+                email: customerEmail,
+                name: customerName,
+                plano: planName || 'PRO',
+                status: 'PENDING',
+                createdAt: new Date().toISOString(),
                 expiresAt: expirationDate.toISOString(),
-              });
-              
-              await firestoreRequest('PATCH', `activations_by_payment/${payment.id}`, { code: activationCode });
-              await firestoreRequest('PATCH', `users/${customerEmail}`, {
-                email: customerEmail, isPro: true, subscriptionId: payment.id, plano: planName,
-                updatedAt: new Date().toISOString(),
-              });
+              };
 
-              const emailHtml = `<h1 style="color:#C67D3D">${activationCode}</h1><p>Use este código para ativar sua licença.</p>`;
-              await sendEmail(customerEmail, 'Seu código de ativação R3D Pro', emailHtml);
+              await db.collection('activations').doc(code).set(activationData);
+              await db.collection('activations_by_payment').doc(payment.id).set({ code });
+              console.log(`[Activation] Código gerado: ${code} para ${customerEmail}`);
+
+              try {
+                const emailHtml = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+                    <h2 style="color:#C67D3D">Parabéns pela sua compra! 🎉</h2>
+                    <p>Olá ${customerName}, seu pagamento foi confirmado.</p>
+                    <p>Aqui está seu código de ativação para o R3D Print Manager Pro:</p>
+                    <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
+                      <h1 style="color:#C67D3D;font-size:32px;margin:10px 0">${code}</h1>
+                    </div>
+                    <p><strong>Instruções:</strong></p>
+                    <ol>
+                      <li>Baixe o aplicativo: <a href="https://r3dprintmanagerpro.com.br/api/download">Clique aqui para baixar</a></li>
+                      <li>Abra o aplicativo e insira o código acima quando solicitado.</li>
+                      <li>O sistema irá gerar sua licença final vinculada ao seu computador.</li>
+                    </ol>
+                    <p style="color:#ff4444"><strong>Atenção:</strong> Este código expira em 7 dias se não for utilizado.</p>
+                    <p>Dúvidas? Responda este e-mail.</p>
+                  </div>`;
+
+                await sendEmail(customerEmail, 'Seu código de ativação R3D Print Manager Pro', emailHtml);
+
+                if (isSimulated && process.env.ADMIN_EMAIL && process.env.ADMIN_EMAIL !== customerEmail) {
+                  await sendEmail(process.env.ADMIN_EMAIL, `[SIMULAÇÃO] Código de Ativação - ${customerEmail}`, emailHtml);
+                }
+              } catch (emailErr) {
+                console.error('Erro ao enviar e-mail de ativação:', emailErr);
+              }
             }
+          }
 
-            if (couponCode && isFirstInstallment) {
-              const coupon = await firestoreRequest('GET', `cupons/${couponCode.toUpperCase()}`).catch(() => null);
-              if (coupon) {
-                const vendas = Array.isArray(coupon.vendas) ? coupon.vendas : [];
-                const jaProcessado = vendas.some((v: any) => v.paymentId === payment.id);
-                if (!jaProcessado) {
-                  vendas.push({ paymentId: payment.id, plano: planName, valor: payment.value, cliente: customerName, email: customerEmail, data: new Date().toISOString() });
-                  await firestoreRequest('PATCH', `cupons/${couponCode.toUpperCase()}`, {
-                    ...coupon, usos: (coupon.usos || 0) + 1, vendas,
-                  });
+          if (couponCode && isFirstInstallment) {
+            const couponSnap = await db.collection('cupons').doc(couponCode.toUpperCase()).get();
+
+            if (couponSnap.exists) {
+              const coupon = couponSnap.data()!;
+              const existingVendas = Array.isArray(coupon.vendas) ? coupon.vendas : [];
+              const installmentId = payment.installment || payment.id;
+              const jaProcessado = existingVendas.some((v: any) =>
+                v.installmentId === installmentId || v.paymentId === payment.id
+              );
+
+              if (!jaProcessado) {
+                const novaVenda = {
+                  paymentId: payment.id,
+                  installmentId,
+                  plano: planName || 'N/A',
+                  valor: payment.value,
+                  cliente: customerName,
+                  email: customerEmail,
+                  afiliado: coupon.afiliado_nome || '',
+                  data: new Date().toISOString(),
+                };
+
+                const updatedVendas = [...existingVendas, novaVenda];
+                const novosUsos = (Number(coupon.usos) || 0) + 1;
+
+                await db.collection('cupons').doc(coupon.codigo || couponCode.toUpperCase()).set({
+                  ...coupon,
+                  usos: novosUsos,
+                  vendas: updatedVendas,
+                }, { merge: true });
+
+                if (coupon.afiliado_email) {
+                  await sendEmail(
+                    coupon.afiliado_email,
+                    `🎉 Nova venda com seu cupom ${coupon.codigo}!`,
+                    `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+                      <h2 style="color:#C67D3D">Nova venda realizada! 🚀</h2>
+                      <p>Olá ${coupon.afiliado_nome}, seu cupom gerou mais uma venda!</p>
+                      <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;margin:20px 0">
+                        <p><strong style="color:#C67D3D">Cupom:</strong> ${coupon.codigo}</p>
+                        <p><strong style="color:#C67D3D">Plano adquirido:</strong> ${planName || 'N/A'}</p>
+                        <p><strong style="color:#C67D3D">Cliente:</strong> ${customerName}</p>
+                        <p><strong style="color:#C67D3D">Valor:</strong> R$ ${payment.value.toFixed(2)}</p>
+                        <p><strong style="color:#C67D3D">Total de usos:</strong> ${novosUsos}</p>
+                        <p><strong style="color:#C67D3D">Data:</strong> ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}</p>
+                      </div>
+                    </div>`
+                  );
+                }
+
+                if (process.env.ADMIN_EMAIL) {
+                  await sendEmail(
+                    process.env.ADMIN_EMAIL,
+                    `Nova venda com cupom — ${coupon.codigo}`,
+                    `<div style="font-family:Arial,sans-serif">
+                      <h3>Nova venda com cupom de afiliado</h3>
+                      <p><strong>Cupom:</strong> ${coupon.codigo}</p>
+                      <p><strong>Plano:</strong> ${planName || 'N/A'}</p>
+                      <p><strong>Afiliado:</strong> ${coupon.afiliado_nome} (${coupon.afiliado_email})</p>
+                      <p><strong>Cliente:</strong> ${customerName} (${customerEmail})</p>
+                      <p><strong>Valor:</strong> R$ ${payment.value.toFixed(2)}</p>
+                      <p><strong>Total de usos:</strong> ${novosUsos}</p>
+                      <p><strong>Data:</strong> ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}</p>
+                    </div>`
+                  );
                 }
               }
             }
           }
-        } catch (e) { console.error('Webhook error:', e); }
-      })();
+        }
+        return; // Já respondemos com 200 OK no início
+      } catch (e: any) {
+        console.error('[Webhook] Erro:', e);
+        // Não enviamos erro 500 aqui porque já respondemos 200 OK
+      }
       return;
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // LICENÇAS
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    // Status do usuário
+    // ── Status do usuário ───────────────────────────────────────────────────────
     if (url.includes('/api/user/status/') && method === 'GET') {
       const email = decodeURIComponent(url.split('/api/user/status/')[1]);
-      const user = await firestoreRequest('GET', `users/${email}`).catch(() => null);
-      return res.json(user || { isPro: false });
+      const data = await fsGet('users', email);
+      return res.json(data || { isPro: false });
     }
 
-    // Trial por HWID
+    // ── Trial direto por HWID ───────────────────────────────────────────────────
     if (url.includes('/api/license/trial-hwid') && method === 'POST') {
       const { hwid, email } = req.body;
+
       if (!hwid) return res.status(400).json({ message: 'HWID é obrigatório' });
-      
-      const trialHistory = await firestoreRequest('GET', `trials_hwid/${hwid}`).catch(() => null);
-      if (trialHistory) {
-        return res.status(400).json({ message: 'Este computador já utilizou o teste gratuito.' });
+
+      const hwidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      if (!hwidRegex.test(hwid)) {
+        return res.status(400).json({ message: 'Formato de HWID inválido. Use: 00000000-0000-0000-0000-000000000000' });
       }
-      
+
+      // Verifica histórico permanente de trial (mesmo após licença expirar/ser deletada)
+      const trialHistory = await fsGet('trials_hwid', hwid);
+      if (trialHistory) {
+        return res.status(400).json({
+          message: 'Este computador já utilizou o período de teste gratuito. Adquira um plano para continuar.'
+        });
+      }
+
+      // Verifica histórico permanente de trial por email
+      if (email) {
+        const emailHistory = await fsGet('trials_email', email.toLowerCase());
+        if (emailHistory) {
+          return res.status(400).json({
+            message: 'Este e-mail já utilizou o período de teste gratuito.'
+          });
+        }
+      }
+
+      // Verifica se já tem licença ativa (qualquer plano)
+      const existingLicense = await fsGet('licenses', hwid);
+      if (existingLicense) {
+        if (existingLicense.plano === 'Trial') {
+          return res.status(400).json({ message: 'Este computador já possui um teste ativo.' });
+        }
+        return res.status(400).json({ message: 'Este computador já possui uma licença ativa.' });
+      }
+
+      // Gera licença trial (7 dias)
       const expiration = new Date();
       expiration.setDate(expiration.getDate() + 7);
-      const licenseKey = generateLicenseKey({ hwid, type: 'Trial', expiration: expiration.toISOString() });
-      
-      await firestoreRequest('PATCH', `licenses/${hwid}`, {
-        hwid, plano: 'Trial', licenseKey, email: email || '', activatedAt: new Date().toISOString(),
+
+      const payload = {
+        hwid,
+        type: 'Trial',
+        issued: new Date().toISOString(),
         expiration: expiration.toISOString(),
+        version: 1,
+        nonce: randomBytes(8).toString('hex')
+      };
+
+      const licenseKey = generateLicenseKey(payload);
+
+      // Salva licença ativa
+      await fsSet('licenses', hwid, {
+        hwid,
+        plano: 'Trial',
+        licenseKey,
+        email: email || '',
+        activatedAt: new Date().toISOString(),
+        expiration: expiration.toISOString()
       });
-      await firestoreRequest('PATCH', `trials_hwid/${hwid}`, { hwid, email: email || '', usedAt: new Date().toISOString() });
-      
-      if (email) {
-        await firestoreRequest('PATCH', `trials_email/${email.toLowerCase()}`, { hwid, email, usedAt: new Date().toISOString() });
-        await sendEmail(email, 'Teste R3D Pro ativado!', `<h1>Seu trial de 7 dias está ativo!</h1><p>HWID: ${hwid}</p>`);
+
+      // Salva histórico permanente para bloquear novos trials no mesmo HWID
+      // Este registro NÃO é deletado mesmo que a licença expire
+      try {
+        await fsCreate('trials_hwid', hwid, {
+          hwid,
+          email: email || '',
+          usedAt: new Date().toISOString(),
+          expiration: expiration.toISOString()
+        });
+      } catch (e: any) {
+        console.error('[Trial-HWID] Erro ao salvar trials_hwid:', e.response?.data || e.message);
+        throw e;
       }
-      
-      return res.json({ success: true, plano: 'Trial', expiration: expiration.toISOString(), licenseKey, diasRestantes: 7 });
+
+      // Salva histórico permanente para bloquear novos trials no mesmo email
+      if (email) {
+        try {
+          await fsCreate('trials_email', email.toLowerCase(), {
+            hwid,
+            email: email.toLowerCase(),
+            usedAt: new Date().toISOString(),
+            expiration: expiration.toISOString()
+          });
+        } catch (e: any) {
+          console.error('[Trial-HWID] Erro ao salvar trials_email:', e.response?.data || e.message);
+          throw e;
+        }
+      }
+
+      console.log(`[Trial-HWID] Trial ativado para HWID: ${hwid}, email: ${email || 'não informado'}`);
+
+      // Envia e-mail de confirmação se e-mail foi fornecido
+      if (email) {
+        try {
+          await sendEmail(
+            email,
+            'Seu Teste Gratuito R3D Pro foi ativado! 🚀',
+            `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+              <h2 style="color:#C67D3D">Seu teste gratuito está ativo! 🎉</h2>
+              <p>Olá! Seu período de teste de <strong>7 dias</strong> do R3D Print Manager Pro foi ativado com sucesso.</p>
+              <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;margin:20px 0">
+                <p style="margin:0 0 8px;color:#999;font-size:12px">HARDWARE ID</p>
+                <p style="margin:0;color:#C67D3D;font-family:monospace;font-size:13px;word-break:break-all">${hwid}</p>
+                <hr style="border:1px solid #333;margin:16px 0"/>
+                <p style="margin:0 0 4px;color:#999;font-size:12px">EXPIRA EM</p>
+                <p style="margin:0;color:white;font-size:14px;font-weight:bold">${expiration.toLocaleDateString('pt-BR')} às ${expiration.toLocaleTimeString('pt-BR')}</p>
+              </div>
+              <p><strong>O que você pode fazer agora:</strong></p>
+              <ul>
+                <li>Acesse todas as funções do R3D Pro por 7 dias completos.</li>
+                <li>Após o prazo, o software será bloqueado automaticamente.</li>
+                <li>Para continuar usando, adquira um plano em <a href="https://r3dprintmanagerpro.com.br/#pricing">r3dprintmanagerpro.com.br</a>.</li>
+              </ul>
+              <p style="color:#999;font-size:12px">⚠️ Cada computador (HWID) pode utilizar o teste gratuito apenas uma única vez.</p>
+              <p>Dúvidas? Fale conosco pelo WhatsApp!</p>
+            </div>`
+          );
+        } catch (emailErr) {
+          console.error('[Trial-HWID] Erro ao enviar e-mail:', emailErr);
+          // Não falha a requisição por erro de e-mail
+        }
+      }
+
+      // Notifica admin
+      if (process.env.ADMIN_EMAIL) {
+        try {
+          await sendEmail(
+            process.env.ADMIN_EMAIL,
+            `Novo Trial HWID ativado`,
+            `<div style="font-family:Arial,sans-serif">
+              <h3>Novo teste gratuito por HWID</h3>
+              <p><strong>HWID:</strong> ${hwid}</p>
+              <p><strong>E-mail:</strong> ${email || 'Não informado'}</p>
+              <p><strong>Expira em:</strong> ${expiration.toLocaleDateString('pt-BR')}</p>
+              <p><strong>Data:</strong> ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}</p>
+            </div>`
+          );
+        } catch (e) { /* silencioso */ }
+      }
+
+      return res.json({
+        success: true,
+        plano: 'Trial',
+        expiration: expiration.toISOString(),
+        licenseKey,
+        diasRestantes: 7
+      });
     }
 
-    // Ativar licença
-    if (url === '/api/license/activate' && method === 'POST') {
-      const { activationCode, hwid } = req.body;
-      if (!activationCode || !hwid) return res.status(400).json({ message: 'Código e HWID obrigatórios' });
-      
-      const activation = await firestoreRequest('GET', `activations/${activationCode.toUpperCase()}`).catch(() => null);
-      if (!activation) return res.status(404).json({ message: 'Código não encontrado' });
-      if (activation.status === 'USED') return res.status(400).json({ message: 'Código já utilizado' });
-      if (activation.expiresAt && new Date(activation.expiresAt) < new Date()) {
-        return res.status(400).json({ message: 'Código expirado' });
+    // ── Ativar Licença ──────────────────────────────────────────────────────────
+    if (url.includes('/api/license/activate') && method === 'POST') {
+      const { code, activationCode, hwid } = req.body;
+      const finalCode = code || activationCode;
+
+      if (!finalCode || !hwid) {
+        console.warn('[Activation] Campos ausentes:', { code, activationCode, hwid });
+        return res.status(400).json({ message: 'Código e HWID são obrigatórios' });
       }
+
+      const hwidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      if (!hwidRegex.test(hwid)) {
+        return res.status(400).json({ message: 'Formato de Hardware ID (HWID) inválido. Use o formato: 00000000-0000-0000-0000-000000000000' });
+      }
+
+      const activation = await fsGet('activations', String(finalCode).toUpperCase());
+      if (!activation) return res.status(404).json({ message: 'Código de ativação não encontrado' });
+      if (activation.status === 'USED') return res.status(400).json({ message: 'Este código já foi utilizado' });
+      if (new Date(activation.expiresAt) < new Date()) return res.status(400).json({ message: 'Este código expirou' });
 
       const now = new Date();
-      let expiration = null;
+      let expiration: string | null = null;
       const plano = activation.plano || 'Mensal';
-      if (plano === 'Trial') { now.setDate(now.getDate() + 7); expiration = now.toISOString(); }
-      else if (plano === 'Mensal') { now.setDate(now.getDate() + 30); expiration = now.toISOString(); }
-      else if (plano === 'Trimestral') { now.setDate(now.getDate() + 90); expiration = now.toISOString(); }
-      else if (plano === 'Semestral') { now.setDate(now.getDate() + 180); expiration = now.toISOString(); }
-      else if (plano === 'Anual') { now.setDate(now.getDate() + 365); expiration = now.toISOString(); }
 
-      const licenseKey = generateLicenseKey({ hwid, type: plano, expiration });
-      
-      await firestoreRequest('PATCH', `activations/${activationCode.toUpperCase()}`, {
-        status: 'USED', hwid, licenseKey, activatedAt: new Date().toISOString()
+      if (plano === 'Trial') {
+        now.setDate(now.getDate() + 7);
+        expiration = now.toISOString();
+      } else if (plano === 'Mensal') {
+        now.setDate(now.getDate() + 30);
+        expiration = now.toISOString();
+      } else if (plano === 'Trimestral') {
+        now.setDate(now.getDate() + 90);
+        expiration = now.toISOString();
+      } else if (plano === 'Semestral') {
+        now.setDate(now.getDate() + 180);
+        expiration = now.toISOString();
+      } else if (plano === 'Anual') {
+        now.setDate(now.getDate() + 365);
+        expiration = now.toISOString();
+      } else if (plano === 'Vitalício') {
+        expiration = null;
+      }
+
+      const payload = {
+        hwid,
+        type: plano,
+        issued: new Date().toISOString(),
+        expiration,
+        version: 1,
+        nonce: randomBytes(8).toString('hex')
+      };
+
+      const licenseKey = generateLicenseKey(payload);
+
+      await fsSet('activations', String(finalCode).toUpperCase(), {
+        ...activation,
+        status: 'USED',
+        hwid,
+        licenseKey,
+        activatedAt: new Date().toISOString()
       });
-      await firestoreRequest('PATCH', `licenses/${hwid}`, {
-        hwid, plano, licenseKey, email: activation.email, activatedAt: new Date().toISOString(), expiration
+
+      await fsSet('licenses', hwid, {
+        hwid,
+        plano,
+        licenseKey,
+        email: activation.email,
+        activatedAt: new Date().toISOString(),
+        expiration
       });
-      
-      return res.json({ success: true, licenseKey, plano: activation.plano, expiration });
+
+      await fsSet('logs_activation', `${new Date().getTime()}_${hwid}`, {
+        event: 'ACTIVATION_SUCCESS',
+        code: finalCode,
+        hwid,
+        email: activation.email,
+        timestamp: new Date().toISOString()
+      });
+
+      return res.json({
+        success: true,
+        licenseKey,
+        plano: activation.plano,
+        expiration: null
+      });
     }
 
-    // Validar licença
+    // ── Validar Licença ─────────────────────────────────────────────────────────
     if (url.includes('/api/license/validate') && method === 'GET') {
       const hwid = req.query?.hwid || url.split('hwid=')[1]?.split('&')[0];
       if (!hwid) return res.status(400).json({ message: 'HWID ausente' });
-      
-      const license = await firestoreRequest('GET', `licenses/${hwid}`).catch(() => null);
-      if (!license) return res.json({ valid: false, message: 'Licença não encontrada' });
-      
+
+      const license = await fsGet('licenses', hwid);
+      if (!license) return res.status(404).json({ message: 'Licença não encontrada para este HWID', valid: false });
+
       const now = new Date();
       const isExpired = license.expiration && new Date(license.expiration) < now;
-      if (isExpired) return res.json({ valid: false, message: 'Licença expirada', plano: license.plano });
-      
+
+      if (isExpired) {
+        return res.json({
+          valid: false,
+          message: 'Sua licença expirou. Por favor, renove seu plano.',
+          plano: license.plano,
+          expiration: license.expiration,
+          diasRestantes: 0
+        });
+      }
+
       let diasRestantes = 9999;
       if (license.expiration) {
-        diasRestantes = Math.max(0, Math.ceil((new Date(license.expiration).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+        const diffTime = new Date(license.expiration).getTime() - now.getTime();
+        diasRestantes = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
       }
-      return res.json({ valid: true, plano: license.plano, expiration: license.expiration, diasRestantes });
+
+      return res.json({
+        valid: true,
+        plano: license.plano,
+        expiration: license.expiration || null,
+        diasRestantes
+      });
     }
 
-    // Recuperar códigos
+    // ── Recuperar Códigos ───────────────────────────────────────────────────────
     if (url.includes('/api/license/recover') && method === 'GET') {
       const email = req.query?.email || url.split('email=')[1]?.split('&')[0];
-      if (!email) return res.status(400).json({ message: 'E-mail obrigatório' });
-      
-      const allActivations = await firestoreList('activations');
-      const userActivations = allActivations.filter((a: any) => a.email?.toLowerCase() === decodeURIComponent(email).toLowerCase());
-      if (userActivations.length === 0) return res.status(404).json({ message: 'Nenhum código encontrado' });
-      
-      return res.json(userActivations.map((a: any) => ({ code: a.code, status: a.status, createdAt: a.createdAt, plano: a.plano })));
+      if (!email) return res.status(400).json({ message: 'E-mail é obrigatório' });
+
+      try {
+        const allActivations = await fsList('activations');
+        const userActivations = allActivations.filter((a: any) =>
+          a.email?.toLowerCase() === decodeURIComponent(email).toLowerCase()
+        );
+
+        if (userActivations.length === 0) {
+          return res.status(404).json({ message: 'Nenhuma ativação encontrada para este e-mail' });
+        }
+
+        return res.json(userActivations.map((a: any) => ({
+          code: a.code,
+          status: a.status,
+          createdAt: a.createdAt,
+          plano: a.plano
+        })));
+      } catch (e: any) {
+        return res.status(500).json({ message: 'Erro ao recuperar códigos' });
+      }
     }
 
-    // Trial por e-mail (modal hero)
-    if (url === '/api/license/trial' && method === 'POST') {
+    // ── Admin: Listar ativações ─────────────────────────────────────────────────
+    if (url.includes('/api/admin/activations') && method === 'GET') {
+      if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
+      try { return res.json(await fsList('activations')); }
+      catch (e: any) { return res.status(500).json({ message: 'Erro ao listar ativações', error: e.message }); }
+    }
+
+    // ── Admin: Resetar ativação ──────────────────────────────────────────────────
+    if (url.includes('/api/admin/activation/reset/') && method === 'POST') {
+      if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
+      const code = String(url.split('/reset/')[1]?.split('?')[0]);
+      if (!code) return res.status(400).json({ message: 'Código é obrigatório' });
+      try {
+        const activation = await fsGet('activations', code.toUpperCase());
+        if (!activation) return res.status(404).json({ message: 'Ativação não encontrada' });
+        await fsSet('activations', code.toUpperCase(), { ...activation, status: 'AVAILABLE', usedAt: null, hwid: null });
+        return res.json({ message: 'Ativação resetada com sucesso' });
+      } catch (e: any) { return res.status(500).json({ message: 'Erro ao resetar ativação' }); }
+    }
+
+    // ── Admin: Listar licenças ──────────────────────────────────────────────────
+    if (url.includes('/api/admin/licenses') && method === 'GET') {
+      if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
+      try { return res.json(await fsList('licenses')); }
+      catch (e: any) { return res.status(500).json({ message: 'Erro ao listar licenças' }); }
+    }
+
+    // Excluir Licença
+    if (req.method === 'DELETE' && req.url?.startsWith('/api/admin/license/delete/')) {
+      if (!isAdmin) return res.status(401).json({ error: 'Não autorizado' });
+      try {
+        const hwid = String(req.url.split('/').pop()); // O String() resolve o erro TS2345
+        const snapshot = await db.collection('licenses').where('hwid', '==', hwid).get();
+        const batch = db.batch();
+        snapshot.docs.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+        return res.status(200).json({ success: true });
+      } catch (e: any) {
+        return res.status(500).json({ error: e.message });
+      }
+    }
+
+    // ── Admin: Deletar ativação ──────────────────────────────────────────────────
+    if (req.method === 'DELETE' && req.url?.startsWith('/api/admin/activation/delete/')) {
+      if (!isAdmin) return res.status(401).json({ error: 'Não autorizado' });
+      try {
+        const code = String(req.url.split('/').pop()); // O String() resolve o erro TS2345
+        if (!code) return res.status(400).json({ error: 'Código é obrigatório' });
+        await db.collection('activations').doc(code.toUpperCase()).delete();
+        return res.status(200).json({ success: true });
+      } catch (e: any) {
+        return res.status(500).json({ error: e.message });
+      }
+    }
+
+    // ── Trial por e-mail (modal hero) ────────────────────────────────────────────
+    if (url.includes('/api/license/trial') && !url.includes('/trial-hwid') && method === 'POST') {
       const { email, name } = req.body;
-      if (!email) return res.status(400).json({ message: 'E-mail obrigatório' });
-      
-      const allActivations = await firestoreList('activations');
+      if (!email) return res.status(400).json({ message: 'E-mail é obrigatório' });
+
+      const allActivations = await fsList('activations');
       const hasTrial = allActivations.some((a: any) => a.email === email && a.plano === 'Trial');
-      if (hasTrial) return res.status(400).json({ message: 'Você já solicitou um período de teste.' });
-      
+      if (hasTrial) return res.status(400).json({ message: 'Você já solicitou um período de teste para este e-mail.' });
+
       const code = `R3D-TRIAL-${randomBytes(4).toString('hex').toUpperCase()}`;
       const expirationDate = new Date();
       expirationDate.setDate(expirationDate.getDate() + 7);
-      
-      await firestoreRequest('PATCH', `activations/${code}`, {
-        code, email, name: name || 'Usuário Trial', plano: 'Trial', status: 'PENDING',
-        createdAt: new Date().toISOString(), expiresAt: expirationDate.toISOString(),
-      });
-      
-      await sendEmail(email, 'Seu código TRIAL R3D Pro', `<h1>${code}</h1><p>Use este código para ativar seu trial de 7 dias.</p>`);
+
+      const activationData = {
+        code,
+        email,
+        name: name || 'Usuário Trial',
+        plano: 'Trial',
+        status: 'PENDING',
+        createdAt: new Date().toISOString(),
+        expiresAt: expirationDate.toISOString(),
+      };
+
+      await fsSet('activations', code, activationData);
+
+      const emailHtml = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+          <h2 style="color:#C67D3D">Seu período de teste começou! 🚀</h2>
+          <p>Olá, aqui está seu código de ativação TRIAL (7 dias) para o R3D Print Manager Pro:</p>
+          <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
+            <h1 style="color:#C67D3D;font-size:32px;margin:10px 0">${code}</h1>
+          </div>
+          <p><strong>Importante:</strong></p>
+          <ul>
+            <li>Esta licença é válida por 7 dias após a ativação.</li>
+            <li>Após o prazo, o sistema será bloqueado até a aquisição de um plano.</li>
+            <li>A licença fica vinculada ao seu Hardware ID (HWID).</li>
+          </ul>
+          <p>Aproveite ao máximo!</p>
+        </div>`;
+
+      await sendEmail(email, 'Seu código TRIAL - R3D Print Manager Pro', emailHtml);
+
       return res.json({ success: true, message: 'Código enviado para seu e-mail!' });
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // ADMIN: ATIVAÇÕES E LICENÇAS
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    if (url === '/api/admin/activations' && method === 'GET') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      return res.json(await firestoreList('activations'));
-    }
-    
-    if (url.includes('/api/admin/activation/reset/') && method === 'POST') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const lastPart = url.split('/').pop();
-      if (typeof lastPart !== 'string' || lastPart === '') {
-        return res.status(400).json({ message: 'Código inválido' });
-      }
-      const code = lastPart;
-      const activation = await firestoreRequest('GET', `activations/${code.toUpperCase()}`).catch(() => null);
-      if (!activation) return res.status(404).json({ message: 'Ativação não encontrada' });
-      await firestoreRequest('PATCH', `activations/${code.toUpperCase()}`, { status: 'AVAILABLE', usedAt: null, hwid: null });
-      return res.json({ success: true });
-    }
-    
-    if (url === '/api/admin/licenses' && method === 'GET') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      return res.json(await firestoreList('licenses'));
-    }
-    
-    if (url.includes('/api/admin/license/delete/') && method === 'DELETE') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const lastPart = url.split('/').pop();
-      if (typeof lastPart !== 'string' || lastPart === '') {
-        return res.status(400).json({ message: 'HWID inválido' });
-      }
-      const hwid = lastPart;
-      await firestoreDelete('licenses', hwid);
-      return res.json({ success: true });
-    }
-    
-    if (url.includes('/api/admin/activation/delete/') && method === 'DELETE') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const lastPart = url.split('/').pop();
-      if (typeof lastPart !== 'string' || lastPart === '') {
-        return res.status(400).json({ message: 'Código inválido' });
-      }
-      const code = lastPart;
-      await firestoreDelete('activations', code.toUpperCase());
-      return res.json({ success: true });
-    }
-    
-    if (url === '/api/admin/backup' && method === 'GET') {
-      if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const backup: any = { timestamp: new Date().toISOString() };
-      const collections = ['activations', 'licenses', 'cupons', 'payments', 'trials_hwid', 'trials_email'];
-      for (const col of collections) {
-        backup[col] = await firestoreList(col);
-      }
-      return res.json(backup);
+    // ── Admin: Backup Total ─────────────────────────────────────────────────────
+    if (url.includes('/api/admin/backup') && method === 'GET') {
+      if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
+      try {
+        const activations = await fsList('activations');
+        const licenses = await fsList('licenses');
+        const cupons = await fsList('cupons');
+        const payments = await fsList('payments');
+        const trialsHwid = await fsList('trials_hwid');
+        const trialsEmail = await fsList('trials_email');
+        return res.json({
+          timestamp: new Date().toISOString(),
+          activations,
+          licenses,
+          cupons,
+          payments,
+          trialsHwid,
+          trialsEmail
+        });
+      } catch (e: any) { return res.status(500).json({ message: 'Erro ao gerar backup' }); }
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // DOWNLOAD
-    // ──────────────────────────────────────────────────────────────────────────
-    if (url === '/api/download') {
+    // ── SIMULAÇÃO DIRETA DE ATIVAÇÃO (para testes) ─────────────────────────────
+    if (url === '/api/simulate-activation' && method === 'POST') {
+      // Permite apenas em ambiente de teste ou via token especial
+      const isSimulation = req.headers['x-simulate-token'] === 'SIMULATED_TOKEN';
+      if (!isSimulation && process.env.NODE_ENV === 'production') {
+        return res.status(401).json({ message: 'Apenas para ambiente de teste' });
+      }
+
+      const { email, name, plano, couponCode, paymentId } = req.body;
+      if (!email || !plano) {
+        return res.status(400).json({ message: 'E-mail e plano são obrigatórios' });
+      }
+
+      try {
+        // Gera código único
+        const randomPart = randomBytes(6).toString('hex').toUpperCase();
+        const formattedRandom = randomPart.match(/.{1,4}/g)?.join('-') || randomPart;
+        const activationCode = `R3D-ACT-${formattedRandom}`;
+        const expirationDate = new Date();
+        expirationDate.setDate(expirationDate.getDate() + 7); // 7 dias para ativar
+
+        // Salva ativação usando a instância db do Firebase Admin
+        await db.collection('activations').doc(activationCode).set({
+          code: activationCode,
+          paymentId: paymentId || `sim_${Date.now()}`,
+          email,
+          name: name || 'Simulação',
+          plano,
+          status: 'PENDING',
+          createdAt: new Date().toISOString(),
+          expiresAt: expirationDate.toISOString(),
+        });
+
+        // Guarda referência do pagamento
+        await db.collection('activations_by_payment').doc(paymentId || `sim_${Date.now()}`).set({ code: activationCode });
+
+        // Marca usuário como PRO
+        await db.collection('users').doc(email).set({
+          email,
+          isPro: true,
+          subscriptionId: paymentId || `sim_${Date.now()}`,
+          plano,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+
+        // Envia e-mail de confirmação
+        const emailHtml = `
+          <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+            <h2 style="color:#C67D3D">Simulação de Compra - R3D Pro</h2>
+            <p>Olá ${name || email}, esta é uma simulação de ativação.</p>
+            <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
+              <h1 style="color:#C67D3D;font-size:32px;margin:10px 0">${activationCode}</h1>
+              <p style="margin:0;color:#ccc;font-size:12px">Plano: ${plano}</p>
+              ${couponCode ? `<p style="margin:0;color:#ccc;font-size:12px">Cupom: ${couponCode}</p>` : ''}
+            </div>
+            <p><strong>Instruções:</strong> Use este código para ativar sua licença no software.</p>
+            <p>Expira em 7 dias.</p>
+          </div>
+        `;
+        await sendEmail(email, 'Seu código de ativação (simulação)', emailHtml);
+
+        return res.json({ success: true, code: activationCode, message: 'Código gerado com sucesso' });
+      } catch (e: any) {
+        console.error('Erro na simulação:', e);
+        return res.status(500).json({ error: e.message });
+      }
+    }
+
+    // ── Download ────────────────────────────────────────────────────────────────
+    if (url.includes('/api/download')) {
       return res.redirect(302, 'https://github.com/rovateduino/R3D-PRINT-MANAGER-PRO/releases/download/v2.5.0/Setup_R3D_PrintManager_Pro.exe');
     }
 
-    return res.status(404).json({ message: 'Not found' });
-    
+    console.warn(`[API] 404 Not Found: ${method} ${url}`);
+    return res.status(404).json({ message: 'Not found', path: url });
   } catch (error: any) {
-    console.error('API Error:', error);
-    return res.status(500).json({ error: error.message });
+    console.error(`[API] Global Error:`, error);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 }
