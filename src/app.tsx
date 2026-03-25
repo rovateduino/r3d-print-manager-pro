@@ -897,11 +897,27 @@ const AdminPanel = () => {
     <DownloadCloud className="w-5 h-5" />BACKUP JSON
   </button>
   {activeTab === 'cupons' && (
-    <button onClick={() => { setEditingCupom(null); setFormData({ codigo: '', tipo: 'PERCENTUAL', valor: 0, afiliado_nome: '', afiliado_email: '', afiliado_telefone: '', limite_usos: 0, validade: '', ativo: true }); setShowForm(true); }} className="bg-[#C67D3D] hover:bg-[#EA580C] text-white px-6 py-3 rounded-2xl font-black flex items-center gap-2 text-sm">
+    <button
+      onClick={() => {
+        setEditingCupom(null);
+        setFormData({
+          codigo: '',
+          tipo: 'PERCENTUAL',
+          valor: 0,
+          afiliado_nome: '',
+          afiliado_email: '',
+          afiliado_telefone: '',
+          limite_usos: 0,
+          validade: '',
+          ativo: true
+        });
+        setShowForm(true);
+      }}
+      className="bg-[#C67D3D] hover:bg-[#EA580C] text-white px-6 py-3 rounded-2xl font-black flex items-center gap-2 text-sm"
+    >
       <Plus className="w-5 h-5" />NOVO CUPOM
     </button>
   )}
-  {/* NOVO BOTÃO DE LIMPEZA – coloque aqui */}
   <button
     onClick={async () => {
       if (confirm('⚠️ ATENÇÃO: Isso irá apagar TODOS os dados de teste (ativações, pagamentos, licenças, usuários, cupons). Esta ação é irreversível. Deseja continuar?')) {
