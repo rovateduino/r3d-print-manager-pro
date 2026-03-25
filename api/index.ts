@@ -219,6 +219,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+// ============================================================
+// ADMIN - ROTAS DE CUPONS (ORDEM CORRETA)
+// ============================================================
+
+// 1. PRIMEIRO: Excluir cupom específico (DELETE /api/admin/cupom/:id)
+if (url.match(/^\/api\/admin\/cupom\/[^\/]+$/) && method === 'DELETE') {
+  if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
+  const id = url.split('/').pop();
+  if (!id) return res.status(400).json({ error: 'ID ausente' });
+  
+  try {
+    const token = await getToken();
+    const deleteUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${FIREBASE_DATABASE_ID}/documents/cupons/${id}`;
+    await axios.delete(deleteUrl, { headers: { Authorization: `Bearer ${token}` } });
+    return res.json({ success: true, message: 'Cupom excluído com sucesso' });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.response?.data?.error?.message || e.message });
+  }
+}
+
+// 2. SEGUNDO: Listar todos os cupons (GET /api/admin/cupons)
+if (url === '/api/admin/cupons' && method === 'GET') {
+  if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
+  try {
+    const cupons = await firestoreList('cupons');
+    return res.json(cupons);
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+}
+
+// 3. TERCEIRO: Criar cupom (POST /api/admin/cupom/criar)
+if (url === '/api/admin/cupom/criar' && method === 'POST') {
+  // ... seu código existente
+}
+
+// 4. QUARTO: Atualizar cupom (PUT /api/admin/cupom/:id)
+if (url.match(/^\/api\/admin\/cupom\/[^\/]+$/) && method === 'PUT') {
+  // ... seu código existente
+}
+
+    
     // ── Asaas - Criar cliente ─────────────────────────────────────────────────
     if (url === '/api/asaas/customer' && method === 'POST') {
       try {
