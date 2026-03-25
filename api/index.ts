@@ -206,8 +206,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── Validar cupom ───────────────────────────────────────────────────────────
     if (url.includes('/api/cupom/validar') && method === 'GET') {
-      const codigo = req.query?.codigo || url.split('codigo=')[1]?.split('&')[0];
-      if (!codigo) return res.status(400).json({ message: 'Código ausente' });
+      const codigo = String(req.query?.codigo || url.split('codigo=')[1]?.split('&')[0]);
+      if (!codigo || codigo === 'undefined') return res.status(400).json({ message: 'Código ausente' });
       const coupon = await fsGet('cupons', String(codigo).toUpperCase());
       if (!coupon || !coupon.ativo) return res.status(404).json({ message: 'Cupom inválido ou inativo' });
       if (coupon.limite_usos && coupon.usos >= coupon.limite_usos) return res.status(400).json({ message: 'Limite de usos atingido' });
@@ -256,7 +256,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── Admin: Atualizar cupom ──────────────────────────────────────────────────
     if (url.includes('/api/admin/cupom/') && !url.includes('/criar') && method === 'PUT') {
       if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
-      const id = url.split('/api/admin/cupom/')[1]?.split('?')[0];
+      const idPart = url.split('/api/admin/cupom/')[1]?.split('?')[0];
+      if (typeof idPart !== 'string' || idPart === '') {
+        return res.status(400).json({ message: 'ID de cupom inválido' });
+      }
+      const id = idPart;
       try {
         const existing = await fsGet('cupons', id);
         await fsSet('cupons', id, { ...existing, ...req.body });
@@ -267,9 +271,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Excluir Cupom
     if (req.method === 'DELETE' && req.url?.startsWith('/api/admin/cupom/')) {
       if (!isAdmin) return res.status(401).json({ error: 'Não autorizado' });
+      const lastPart = url.split('/').pop();
+      if (typeof lastPart !== 'string' || lastPart === '') {
+        return res.status(400).json({ error: 'ID inválido' });
+      }
+      const id = lastPart;
       try {
-        const id = String(req.url.split('/').pop()); // O String() resolve o erro TS2345
-        if (!id) return res.status(400).json({ error: 'ID ausente' });
         await db.collection('cupons').doc(id).delete();
         return res.status(200).json({ success: true });
       } catch (e: any) {
@@ -762,8 +769,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── Validar Licença ─────────────────────────────────────────────────────────
     if (url.includes('/api/license/validate') && method === 'GET') {
-      const hwid = req.query?.hwid || url.split('hwid=')[1]?.split('&')[0];
-      if (!hwid) return res.status(400).json({ message: 'HWID ausente' });
+      const hwid = String(req.query?.hwid || url.split('hwid=')[1]?.split('&')[0]);
+      if (!hwid || hwid === 'undefined') return res.status(400).json({ message: 'HWID ausente' });
 
       const license = await fsGet('licenses', hwid);
       if (!license) return res.status(404).json({ message: 'Licença não encontrada para este HWID', valid: false });
@@ -797,8 +804,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── Recuperar Códigos ───────────────────────────────────────────────────────
     if (url.includes('/api/license/recover') && method === 'GET') {
-      const email = req.query?.email || url.split('email=')[1]?.split('&')[0];
-      if (!email) return res.status(400).json({ message: 'E-mail é obrigatório' });
+      const email = String(req.query?.email || url.split('email=')[1]?.split('&')[0]);
+      if (!email || email === 'undefined') return res.status(400).json({ message: 'E-mail é obrigatório' });
 
       try {
         const allActivations = await fsList('activations');
@@ -831,8 +838,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── Admin: Resetar ativação ──────────────────────────────────────────────────
     if (url.includes('/api/admin/activation/reset/') && method === 'POST') {
       if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
-      const code = String(url.split('/reset/')[1]?.split('?')[0]);
-      if (!code) return res.status(400).json({ message: 'Código é obrigatório' });
+      const codePart = url.split('/reset/')[1]?.split('?')[0];
+      if (typeof codePart !== 'string' || codePart === '') {
+        return res.status(400).json({ message: 'Código inválido' });
+      }
+      const code = codePart;
       try {
         const activation = await fsGet('activations', code.toUpperCase());
         if (!activation) return res.status(404).json({ message: 'Ativação não encontrada' });
@@ -851,8 +861,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Excluir Licença
     if (req.method === 'DELETE' && req.url?.startsWith('/api/admin/license/delete/')) {
       if (!isAdmin) return res.status(401).json({ error: 'Não autorizado' });
+      const hwidPart = url.split('/').pop();
+      if (typeof hwidPart !== 'string' || hwidPart === '') {
+        return res.status(400).json({ message: 'HWID inválido' });
+      }
+      const hwid = hwidPart;
       try {
-        const hwid = String(req.url.split('/').pop()); // O String() resolve o erro TS2345
         const snapshot = await db.collection('licenses').where('hwid', '==', hwid).get();
         const batch = db.batch();
         snapshot.docs.forEach(doc => batch.delete(doc.ref));
@@ -866,9 +880,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── Admin: Deletar ativação ──────────────────────────────────────────────────
     if (req.method === 'DELETE' && req.url?.startsWith('/api/admin/activation/delete/')) {
       if (!isAdmin) return res.status(401).json({ error: 'Não autorizado' });
+      const codePart = url.split('/').pop();
+      if (typeof codePart !== 'string' || codePart === '') {
+        return res.status(400).json({ message: 'Código inválido' });
+      }
+      const code = codePart;
       try {
-        const code = String(req.url.split('/').pop()); // O String() resolve o erro TS2345
-        if (!code) return res.status(400).json({ error: 'Código é obrigatório' });
         await db.collection('activations').doc(code.toUpperCase()).delete();
         return res.status(200).json({ success: true });
       } catch (e: any) {
