@@ -365,6 +365,68 @@ if (url.match(/^\/api\/admin\/cupom\/[^\/]+$/) && method === 'PUT') {
       }
     }
 
+
+// ── Trial por e-mail (modal hero) ─────────────────────────────────────────
+if (url === '/api/license/trial' && method === 'POST') {
+  const { email, name } = req.body;
+  if (!email) return res.status(400).json({ message: 'E-mail é obrigatório' });
+
+  try {
+    // Verifica se já existe trial para este email
+    const existingActivations = await firestoreList('activations');
+    const hasTrial = existingActivations.some((a: any) => 
+      a.email === email && a.plano === 'Trial'
+    );
+    
+    if (hasTrial) {
+      return res.status(400).json({ message: 'Você já solicitou um período de teste para este e-mail.' });
+    }
+
+    // Gera código de trial
+    const code = `R3D-TRIAL-${randomBytes(4).toString('hex').toUpperCase()}`;
+    const expirationDate = new Date();
+    expirationDate.setDate(expirationDate.getDate() + 7);
+
+    // Salva no Firestore
+    await firestoreRequest('PATCH', `activations/${code}`, {
+      code,
+      email,
+      name: name || 'Usuário Trial',
+      plano: 'Trial',
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+      expiresAt: expirationDate.toISOString(),
+    });
+
+    // Envia e-mail com o código
+    const emailHtml = `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+        <h2 style="color:#C67D3D">Seu período de teste começou! 🚀</h2>
+        <p>Olá ${name || 'usuário'}! Aqui está seu código de ativação TRIAL (7 dias):</p>
+        <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
+          <h1 style="color:#C67D3D;font-size:32px;margin:10px 0">${code}</h1>
+        </div>
+        <p><strong>Instruções:</strong></p>
+        <ul>
+          <li>Baixe o aplicativo em: <a href="https://r3dprintmanagerpro.com.br/api/download">Clique aqui</a></li>
+          <li>Abra o aplicativo e insira o código acima quando solicitado</li>
+          <li>O sistema irá gerar sua licença trial vinculada ao seu computador</li>
+        </ul>
+        <p style="color:#ff4444"><strong>Atenção:</strong> Este código expira em 7 dias.</p>
+        <p>Dúvidas? Responda este e-mail.</p>
+      </div>`;
+
+    await sendEmail(email, 'Seu código TRIAL - R3D Print Manager Pro', emailHtml);
+
+    return res.json({ success: true, message: 'Código enviado para seu e-mail!' });
+    
+  } catch (e: any) {
+    console.error('Erro no trial:', e);
+    return res.status(500).json({ message: 'Erro ao processar solicitação', error: e.message });
+  }
+}
+
+    
     // ── Download ──────────────────────────────────────────────────────────────
     if (url === '/api/download') {
       return res.redirect(302, 'https://github.com/rovateduino/R3D-PRINT-MANAGER-PRO/releases/download/v2.5.0/Setup_R3D_PrintManager_Pro.exe');
