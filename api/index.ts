@@ -1,6 +1,23 @@
 import { createCipheriv, createHash, randomBytes } from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import axios from 'axios';
-import firebaseConfig from '../firebase-applet-config.json';
+
+// ── Fix ERR_IMPORT_ATTRIBUTE_MISSING (Node 22+ ESM não aceita import de JSON sem "with { type: 'json' }")
+// Usa readFileSync que funciona em qualquer versão sem atributos especiais
+let firebaseConfig: { projectId?: string; firestoreDatabaseId?: string } = {};
+try {
+  const paths = [
+    join(process.cwd(), 'firebase-applet-config.json'),
+    join(process.cwd(), '..', 'firebase-applet-config.json'),
+    join(__dirname, '..', 'firebase-applet-config.json'),
+  ];
+  for (const p of paths) {
+    try { firebaseConfig = JSON.parse(readFileSync(p, 'utf-8')); break; } catch { /* tenta próximo */ }
+  }
+} catch {
+  console.warn('[Config] firebase-applet-config.json não encontrado — usando apenas variáveis de ambiente');
+}
 
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId;
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
@@ -257,7 +274,6 @@ export default async function handler(req: any, res: any) {
         await fsDelete('cupons', id);
         return res.json({ success: true });
       } catch (e: any) {
-        console.error(`[API] Error deleting coupon ${id}:`, e.response?.data || e.message);
         return res.status(500).json({ message: 'Erro ao deletar cupom', error: e.response?.data || e.message });
       }
     }
@@ -299,35 +315,28 @@ export default async function handler(req: any, res: any) {
       const isSimulated = webhookToken === 'SIMULATED_TOKEN';
       const configuredToken = process.env.ASAAS_WEBHOOK_TOKEN;
 
-      console.log(`[Webhook] Evento recebido: "${eventType}", ID: ${payment?.id || 'N/A'}, Simulado: ${isSimulated}`);
+      console.log(`[Webhook] Evento: "${eventType}", ID: ${payment?.id || 'N/A'}, Simulado: ${isSimulated}`);
 
-      // ── Validação de token ────────────────────────────────────────────────────
       if (configuredToken && !isSimulated && webhookToken !== configuredToken) {
         console.warn('[Webhook] Token inválido');
         return res.status(401).json({ message: 'Unauthorized' });
       }
 
-      // ── EARLY RETURN: ignora eventos que não são de pagamento confirmado ───────
-      // O Asaas envia muitos outros eventos (CHECKOUT_VIEWED, OVERDUE, etc.)
-      // que não precisam de processamento e causavam erro 500.
+      // ── Ignora eventos que não são de pagamento confirmado ────────────────────
       if (!PAYMENT_CONFIRMED_EVENTS.has(eventType)) {
-        console.log(`[Webhook] Evento "${eventType}" ignorado — não requer processamento.`);
+        console.log(`[Webhook] Evento "${eventType}" ignorado.`);
         return res.status(200).json({ status: 'ignored', event: eventType });
       }
 
-      // ── A partir daqui só chegam PAYMENT_CONFIRMED e PAYMENT_RECEIVED ─────────
       if (!payment) {
-        console.warn('[Webhook] Pagamento ausente no corpo do evento confirmado');
+        console.warn('[Webhook] Pagamento ausente no corpo');
         return res.status(400).json({ message: 'Missing payment data' });
       }
 
-      // Garante que payment.value é número válido
       const paymentValue = typeof payment.value === 'number' ? payment.value : parseFloat(payment.value) || 0;
-
       let generatedCode: string | null = null;
 
       try {
-        // Salva raw do pagamento
         await fsSet('payments', payment.id, {
           paymentId: payment.id,
           status: payment.status || '',
@@ -341,23 +350,17 @@ export default async function handler(req: any, res: any) {
           isSimulated,
         });
 
-        // ── Extrair cupom e plano do externalReference ────────────────────────
-        // Formato esperado: "COUPON:CODIGO:PLANO:timestamp"  ou  "REF:PLANO:timestamp"
         const extRef: string = payment.externalReference || '';
         const parts = extRef.split(':');
         const hasCoupon = parts[0] === 'COUPON' && parts.length >= 4;
         const couponCode = hasCoupon ? parts[1] : '';
-        // Para cupom: partes [2 .. length-2] são o nome do plano (pode ter espaços)
-        // Para ref normal: partes [1 .. length-2]
         const planName = hasCoupon
           ? parts.slice(2, parts.length - 1).join(' ').trim()
           : parts.slice(1, parts.length - 1).join(' ').trim();
 
-        // ── Apenas processa na 1ª parcela ─────────────────────────────────────
         const installmentNumber = typeof payment.installmentNumber === 'number' ? payment.installmentNumber : 1;
         const isFirstInstallment = installmentNumber === 1;
 
-        // ── Buscar dados do cliente ────────────────────────────────────────────
         let customerEmail = '';
         let customerName = '';
 
@@ -376,167 +379,92 @@ export default async function handler(req: any, res: any) {
           }
         }
 
-        console.log(`[Webhook] Cliente: ${customerName} <${customerEmail}>, Plano: "${planName}", Parcela: ${installmentNumber}, Cupom: "${couponCode}"`);
+        console.log(`[Webhook] Cliente: ${customerName} <${customerEmail}>, Plano: "${planName}", Parcela: ${installmentNumber}`);
 
-        // ── Ativar usuário Pro + gerar código (apenas na 1ª parcela) ──────────
         if (customerEmail && isFirstInstallment) {
           await fsSet('users', customerEmail, {
-            email: customerEmail,
-            isPro: true,
+            email: customerEmail, isPro: true,
             subscriptionId: payment.installment || payment.id,
             plano: planName || 'PRO',
             updatedAt: new Date().toISOString(),
           });
 
-          // Evita duplicata de código para o mesmo pagamento
           const existingActivation = await fsGet('activations_by_payment', payment.id);
           if (existingActivation?.code) {
             generatedCode = existingActivation.code;
-            console.log(`[Webhook] Código já existente para este pagamento: ${generatedCode}`);
           } else {
             const code = `R3D-ACT-${randomBytes(6).toString('hex').toUpperCase().match(/.{1,4}/g)?.join('-')}`;
             generatedCode = code;
-
             const expirationDate = new Date();
             expirationDate.setDate(expirationDate.getDate() + 7);
 
             await fsSet('activations', code, {
-              code,
-              paymentId: payment.id,
-              email: customerEmail,
-              name: customerName,
-              plano: planName || 'PRO',
-              status: 'PENDING',
+              code, paymentId: payment.id,
+              email: customerEmail, name: customerName,
+              plano: planName || 'PRO', status: 'PENDING',
               createdAt: new Date().toISOString(),
               expiresAt: expirationDate.toISOString(),
             });
-
             await fsSet('activations_by_payment', payment.id, { code });
-            console.log(`[Webhook] Código gerado: ${code} para ${customerEmail}`);
 
-            // E-mail para o cliente
             try {
-              const emailHtml = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-                <h2 style="color:#C67D3D">Parabéns pela sua compra! 🎉</h2>
-                <p>Olá ${customerName}, seu pagamento foi confirmado.</p>
-                <p>Aqui está seu código de ativação para o R3D Print Manager Pro:</p>
-                <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
-                  <h1 style="color:#C67D3D;font-size:32px;margin:10px 0">${code}</h1>
-                </div>
-                <p><strong>Instruções:</strong></p>
-                <ol>
-                  <li>Baixe o aplicativo: <a href="https://r3dprintmanagerpro.com.br/api/download">Clique aqui para baixar</a></li>
-                  <li>Abra o aplicativo e insira o código acima quando solicitado.</li>
-                  <li>O sistema irá gerar sua licença final vinculada ao seu computador.</li>
-                </ol>
-                <p style="color:#ff4444"><strong>Atenção:</strong> Este código expira em 7 dias se não for utilizado.</p>
-                <p>Dúvidas? Responda este e-mail.</p>
-              </div>`;
-
-              await sendEmail(customerEmail, 'Seu código de ativação R3D Print Manager Pro', emailHtml);
-
-              if (isSimulated && process.env.ADMIN_EMAIL && process.env.ADMIN_EMAIL !== customerEmail) {
-                await sendEmail(process.env.ADMIN_EMAIL, `[SIMULAÇÃO] Código de Ativação - ${customerEmail}`, emailHtml);
-              }
-            } catch (emailErr: any) {
-              console.error('[Webhook] Erro ao enviar e-mail de ativação:', emailErr.message);
-            }
+              await sendEmail(customerEmail, 'Seu código de ativação R3D Print Manager Pro',
+                `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+                  <h2 style="color:#C67D3D">Parabéns pela sua compra! 🎉</h2>
+                  <p>Olá ${customerName}, seu pagamento foi confirmado.</p>
+                  <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
+                    <h1 style="color:#C67D3D;font-size:32px;margin:10px 0">${code}</h1>
+                  </div>
+                  <ol>
+                    <li>Baixe: <a href="https://r3dprintmanagerpro.com.br/api/download">r3dprintmanagerpro.com.br/api/download</a></li>
+                    <li>Abra o app e insira o código acima.</li>
+                  </ol>
+                  <p style="color:#ff4444"><strong>Atenção:</strong> Expira em 7 dias se não utilizado.</p>
+                </div>`
+              );
+            } catch (e: any) { console.error('[Webhook] Erro e-mail ativação:', e.message); }
           }
         }
 
-        // ── Processar cupom (apenas na 1ª parcela) ────────────────────────────
         if (couponCode && isFirstInstallment) {
           const coupon = await fsGet('cupons', couponCode.toUpperCase());
-
           if (coupon) {
             const existingVendas = Array.isArray(coupon.vendas) ? coupon.vendas : [];
             const installmentId = payment.installment || payment.id;
-
-            // Evita duplicata
             const jaProcessado = existingVendas.some((v: any) =>
               v.installmentId === installmentId || v.paymentId === payment.id
             );
-
             if (!jaProcessado) {
-              const novaVenda = {
-                paymentId: payment.id,
-                installmentId,
-                plano: planName || 'N/A',
-                valor: paymentValue,
-                cliente: customerName,
-                email: customerEmail,
-                afiliado: coupon.afiliado_nome || '',
-                data: new Date().toISOString(),
-              };
-
-              const updatedVendas = [...existingVendas, novaVenda];
               const novosUsos = (Number(coupon.usos) || 0) + 1;
-
               await fsSet('cupons', coupon.codigo || couponCode.toUpperCase(), {
                 ...coupon,
                 usos: novosUsos,
-                vendas: updatedVendas,
+                vendas: [...existingVendas, {
+                  paymentId: payment.id, installmentId,
+                  plano: planName || 'N/A', valor: paymentValue,
+                  cliente: customerName, email: customerEmail,
+                  data: new Date().toISOString(),
+                }],
               });
-
-              console.log(`[Webhook] Cupom ${couponCode} atualizado: ${novosUsos} usos, valor R$ ${paymentValue.toFixed(2)}`);
-
-              // E-mail para o afiliado
               if (coupon.afiliado_email) {
                 try {
-                  await sendEmail(
-                    coupon.afiliado_email,
-                    `🎉 Nova venda com seu cupom ${coupon.codigo}!`,
+                  await sendEmail(coupon.afiliado_email, `🎉 Nova venda com seu cupom ${coupon.codigo}!`,
                     `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-                      <h2 style="color:#C67D3D">Nova venda realizada! 🚀</h2>
-                      <p>Olá ${coupon.afiliado_nome}, seu cupom gerou mais uma venda!</p>
-                      <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;margin:20px 0">
-                        <p><strong style="color:#C67D3D">Cupom:</strong> ${coupon.codigo}</p>
-                        <p><strong style="color:#C67D3D">Plano adquirido:</strong> ${planName || 'N/A'}</p>
-                        <p><strong style="color:#C67D3D">Cliente:</strong> ${customerName}</p>
-                        <p><strong style="color:#C67D3D">Valor:</strong> R$ ${paymentValue.toFixed(2)}</p>
-                        <p><strong style="color:#C67D3D">Total de usos:</strong> ${novosUsos}</p>
-                        <p><strong style="color:#C67D3D">Data:</strong> ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}</p>
-                      </div>
+                      <h2 style="color:#C67D3D">Nova venda! 🚀</h2>
+                      <p><strong>Cupom:</strong> ${coupon.codigo} | <strong>Plano:</strong> ${planName} | <strong>Valor:</strong> R$ ${paymentValue.toFixed(2)}</p>
                     </div>`
                   );
                 } catch (e: any) { console.error('[Webhook] Erro e-mail afiliado:', e.message); }
               }
-
-              // E-mail para o admin
-              if (process.env.ADMIN_EMAIL) {
-                try {
-                  await sendEmail(
-                    process.env.ADMIN_EMAIL,
-                    `Nova venda com cupom — ${coupon.codigo}`,
-                    `<div style="font-family:Arial,sans-serif">
-                      <h3>Nova venda com cupom de afiliado</h3>
-                      <p><strong>Cupom:</strong> ${coupon.codigo}</p>
-                      <p><strong>Plano:</strong> ${planName || 'N/A'}</p>
-                      <p><strong>Afiliado:</strong> ${coupon.afiliado_nome} (${coupon.afiliado_email})</p>
-                      <p><strong>Cliente:</strong> ${customerName} (${customerEmail})</p>
-                      <p><strong>Valor:</strong> R$ ${paymentValue.toFixed(2)}</p>
-                      <p><strong>Total de usos:</strong> ${novosUsos}</p>
-                      <p><strong>Data:</strong> ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}</p>
-                    </div>`
-                  );
-                } catch (e: any) { console.error('[Webhook] Erro e-mail admin:', e.message); }
-              }
-            } else {
-              console.log(`[Webhook] Cupom ${couponCode} — venda já registrada para este pagamento, ignorando.`);
             }
-          } else {
-            console.warn(`[Webhook] Cupom "${couponCode}" não encontrado no banco.`);
           }
         }
 
-        if (isSimulated) {
-          return res.json({ status: 'success', message: 'Simulação processada', code: generatedCode });
-        }
-
+        if (isSimulated) return res.json({ status: 'success', code: generatedCode });
         return res.status(200).json({ status: 'success' });
 
       } catch (e: any) {
-        console.error('[Webhook] Erro interno:', e.message, e.stack);
+        console.error('[Webhook] Erro interno:', e.message);
         return res.status(500).json({ error: e.message });
       }
     }
@@ -551,7 +479,6 @@ export default async function handler(req: any, res: any) {
     // ── Trial direto por HWID ───────────────────────────────────────────────────
     if (url.includes('/api/license/trial-hwid') && method === 'POST') {
       const { hwid, email } = req.body;
-
       if (!hwid) return res.status(400).json({ message: 'HWID é obrigatório' });
 
       const hwidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -559,20 +486,14 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ message: 'Formato de HWID inválido. Use: 00000000-0000-0000-0000-000000000000' });
       }
 
-      // Histórico permanente — persiste mesmo após licença expirar/ser deletada
       const trialHistory = await fsGet('trials_hwid', hwid);
       if (trialHistory) {
-        return res.status(400).json({
-          message: 'Este computador já utilizou o período de teste gratuito. Adquira um plano para continuar.'
-        });
+        return res.status(400).json({ message: 'Este computador já utilizou o período de teste gratuito. Adquira um plano para continuar.' });
       }
 
-      // Verifica licença ativa
       const existingLicense = await fsGet('licenses', hwid);
       if (existingLicense) {
-        if (existingLicense.plano === 'Trial') {
-          return res.status(400).json({ message: 'Este computador já possui um teste ativo.' });
-        }
+        if (existingLicense.plano === 'Trial') return res.status(400).json({ message: 'Este computador já possui um teste ativo.' });
         return res.status(400).json({ message: 'Este computador já possui uma licença ativa.' });
       }
 
@@ -580,60 +501,26 @@ export default async function handler(req: any, res: any) {
       expiration.setDate(expiration.getDate() + 7);
 
       const licenseKey = generateLicenseKey({
-        hwid, type: 'Trial',
-        issued: new Date().toISOString(),
-        expiration: expiration.toISOString(),
-        version: 1, nonce: randomBytes(8).toString('hex')
+        hwid, type: 'Trial', issued: new Date().toISOString(),
+        expiration: expiration.toISOString(), version: 1, nonce: randomBytes(8).toString('hex')
       });
 
-      await fsSet('licenses', hwid, {
-        hwid, plano: 'Trial', licenseKey,
-        email: email || '',
-        activatedAt: new Date().toISOString(),
-        expiration: expiration.toISOString()
-      });
-
-      // Registro permanente para bloquear novos trials neste HWID
-      await fsSet('trials_hwid', hwid, {
-        hwid, email: email || '',
-        usedAt: new Date().toISOString(),
-        expiration: expiration.toISOString()
-      });
-
-      console.log(`[Trial-HWID] Ativado — HWID: ${hwid}, email: ${email || 'não informado'}`);
+      await fsSet('licenses', hwid, { hwid, plano: 'Trial', licenseKey, email: email || '', activatedAt: new Date().toISOString(), expiration: expiration.toISOString() });
+      await fsSet('trials_hwid', hwid, { hwid, email: email || '', usedAt: new Date().toISOString(), expiration: expiration.toISOString() });
 
       if (email) {
         try {
           await sendEmail(email, 'Seu Teste Gratuito R3D Pro foi ativado! 🚀',
             `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-              <h2 style="color:#C67D3D">Seu teste gratuito está ativo! 🎉</h2>
-              <p>Seu período de <strong>7 dias</strong> do R3D Print Manager Pro foi ativado com sucesso.</p>
+              <h2 style="color:#C67D3D">Teste gratuito ativo! 🎉</h2>
               <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;margin:20px 0">
-                <p style="margin:0 0 8px;color:#999;font-size:12px">HARDWARE ID</p>
-                <p style="margin:0;color:#C67D3D;font-family:monospace;font-size:13px;word-break:break-all">${hwid}</p>
-                <hr style="border:1px solid #333;margin:16px 0"/>
-                <p style="margin:0 0 4px;color:#999;font-size:12px">EXPIRA EM</p>
-                <p style="margin:0;color:white;font-size:14px;font-weight:bold">${expiration.toLocaleDateString('pt-BR')}</p>
+                <p style="color:#C67D3D;font-family:monospace;font-size:12px">${hwid}</p>
+                <p>Expira em: <strong>${expiration.toLocaleDateString('pt-BR')}</strong></p>
               </div>
               <p>Após o prazo, adquira um plano em <a href="https://r3dprintmanagerpro.com.br/#pricing">r3dprintmanagerpro.com.br</a>.</p>
-              <p style="color:#999;font-size:12px">⚠️ Cada computador pode utilizar o teste gratuito apenas uma única vez.</p>
             </div>`
           );
         } catch (e: any) { console.error('[Trial-HWID] Erro e-mail:', e.message); }
-      }
-
-      if (process.env.ADMIN_EMAIL) {
-        try {
-          await sendEmail(process.env.ADMIN_EMAIL, `Novo Trial HWID ativado`,
-            `<div style="font-family:Arial,sans-serif">
-              <h3>Novo teste gratuito por HWID</h3>
-              <p><strong>HWID:</strong> ${hwid}</p>
-              <p><strong>E-mail:</strong> ${email || 'Não informado'}</p>
-              <p><strong>Expira em:</strong> ${expiration.toLocaleDateString('pt-BR')}</p>
-              <p><strong>Data:</strong> ${new Date().toLocaleString('pt-BR')}</p>
-            </div>`
-          );
-        } catch (e: any) { /* silencioso */ }
       }
 
       return res.json({ success: true, plano: 'Trial', expiration: expiration.toISOString(), licenseKey, diasRestantes: 7 });
@@ -643,15 +530,10 @@ export default async function handler(req: any, res: any) {
     if (url.includes('/api/license/activate') && method === 'POST') {
       const { code, activationCode, hwid } = req.body;
       const finalCode = code || activationCode;
-
-      if (!finalCode || !hwid) {
-        return res.status(400).json({ message: 'Código e HWID são obrigatórios' });
-      }
+      if (!finalCode || !hwid) return res.status(400).json({ message: 'Código e HWID são obrigatórios' });
 
       const hwidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-      if (!hwidRegex.test(hwid)) {
-        return res.status(400).json({ message: 'Formato de Hardware ID (HWID) inválido. Use o formato: 00000000-0000-0000-0000-000000000000' });
-      }
+      if (!hwidRegex.test(hwid)) return res.status(400).json({ message: 'Formato de HWID inválido' });
 
       const activation = await fsGet('activations', String(finalCode).toUpperCase());
       if (!activation) return res.status(404).json({ message: 'Código de ativação não encontrado' });
@@ -661,34 +543,17 @@ export default async function handler(req: any, res: any) {
       const now = new Date();
       let expiration: string | null = null;
       const plano = activation.plano || 'Mensal';
-
       if (plano === 'Trial') { now.setDate(now.getDate() + 7); expiration = now.toISOString(); }
       else if (plano === 'Mensal') { now.setDate(now.getDate() + 30); expiration = now.toISOString(); }
       else if (plano === 'Trimestral') { now.setDate(now.getDate() + 90); expiration = now.toISOString(); }
       else if (plano === 'Semestral') { now.setDate(now.getDate() + 180); expiration = now.toISOString(); }
       else if (plano === 'Anual') { now.setDate(now.getDate() + 365); expiration = now.toISOString(); }
-      else if (plano === 'Vitalício') { expiration = null; }
 
-      const licenseKey = generateLicenseKey({
-        hwid, type: plano, issued: new Date().toISOString(),
-        expiration, version: 1, nonce: randomBytes(8).toString('hex')
-      });
+      const licenseKey = generateLicenseKey({ hwid, type: plano, issued: new Date().toISOString(), expiration, version: 1, nonce: randomBytes(8).toString('hex') });
 
-      await fsSet('activations', String(finalCode).toUpperCase(), {
-        ...activation, status: 'USED', hwid, licenseKey, activatedAt: new Date().toISOString()
-      });
-
-      await fsSet('licenses', hwid, {
-        hwid, plano, licenseKey,
-        email: activation.email,
-        activatedAt: new Date().toISOString(),
-        expiration
-      });
-
-      await fsSet('logs_activation', `${Date.now()}_${hwid.replace(/-/g, '')}`, {
-        event: 'ACTIVATION_SUCCESS', code: finalCode, hwid,
-        email: activation.email, timestamp: new Date().toISOString()
-      });
+      await fsSet('activations', String(finalCode).toUpperCase(), { ...activation, status: 'USED', hwid, licenseKey, activatedAt: new Date().toISOString() });
+      await fsSet('licenses', hwid, { hwid, plano, licenseKey, email: activation.email, activatedAt: new Date().toISOString(), expiration });
+      await fsSet('logs_activation', `${Date.now()}_${hwid.replace(/-/g, '')}`, { event: 'ACTIVATION_SUCCESS', code: finalCode, hwid, email: activation.email, timestamp: new Date().toISOString() });
 
       return res.json({ success: true, licenseKey, plano: activation.plano, expiration });
     }
@@ -699,23 +564,15 @@ export default async function handler(req: any, res: any) {
       if (!hwid) return res.status(400).json({ message: 'HWID ausente' });
 
       const license = await fsGet('licenses', hwid);
-      if (!license) return res.status(404).json({ message: 'Licença não encontrada para este HWID', valid: false });
+      if (!license) return res.status(404).json({ message: 'Licença não encontrada', valid: false });
 
       const now = new Date();
       const isExpired = license.expiration && new Date(license.expiration) < now;
-
-      if (isExpired) {
-        return res.json({
-          valid: false,
-          message: 'Sua licença expirou. Por favor, renove seu plano.',
-          plano: license.plano, expiration: license.expiration, diasRestantes: 0
-        });
-      }
+      if (isExpired) return res.json({ valid: false, message: 'Licença expirada.', plano: license.plano, expiration: license.expiration, diasRestantes: 0 });
 
       let diasRestantes = 9999;
       if (license.expiration) {
-        const diffTime = new Date(license.expiration).getTime() - now.getTime();
-        diasRestantes = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+        diasRestantes = Math.max(0, Math.ceil((new Date(license.expiration).getTime() - now.getTime()) / 86400000));
       }
 
       return res.json({ valid: true, plano: license.plano, expiration: license.expiration || null, diasRestantes });
@@ -725,23 +582,12 @@ export default async function handler(req: any, res: any) {
     if (url.includes('/api/license/recover') && method === 'GET') {
       const email = req.query?.email || url.split('email=')[1]?.split('&')[0];
       if (!email) return res.status(400).json({ message: 'E-mail é obrigatório' });
-
       try {
-        const allActivations = await fsList('activations');
-        const userActivations = allActivations.filter((a: any) =>
-          a.email?.toLowerCase() === decodeURIComponent(email).toLowerCase()
-        );
-
-        if (userActivations.length === 0) {
-          return res.status(404).json({ message: 'Nenhuma ativação encontrada para este e-mail' });
-        }
-
-        return res.json(userActivations.map((a: any) => ({
-          code: a.code, status: a.status, createdAt: a.createdAt, plano: a.plano
-        })));
-      } catch (e: any) {
-        return res.status(500).json({ message: 'Erro ao recuperar códigos' });
-      }
+        const all = await fsList('activations');
+        const found = all.filter((a: any) => a.email?.toLowerCase() === decodeURIComponent(email).toLowerCase());
+        if (!found.length) return res.status(404).json({ message: 'Nenhuma ativação encontrada para este e-mail' });
+        return res.json(found.map((a: any) => ({ code: a.code, status: a.status, createdAt: a.createdAt, plano: a.plano })));
+      } catch (e: any) { return res.status(500).json({ message: 'Erro ao recuperar códigos' }); }
     }
 
     // ── Admin: Listar ativações ─────────────────────────────────────────────────
@@ -761,7 +607,7 @@ export default async function handler(req: any, res: any) {
         if (!activation) return res.status(404).json({ message: 'Ativação não encontrada' });
         await fsSet('activations', code.toUpperCase(), { ...activation, status: 'AVAILABLE', usedAt: null, hwid: null });
         return res.json({ message: 'Ativação resetada com sucesso' });
-      } catch (e: any) { return res.status(500).json({ message: 'Erro ao resetar ativação' }); }
+      } catch (e: any) { return res.status(500).json({ message: 'Erro ao resetar' }); }
     }
 
     // ── Admin: Listar licenças ──────────────────────────────────────────────────
@@ -776,14 +622,9 @@ export default async function handler(req: any, res: any) {
       if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
       let hwid = url.split('/delete/')[1]?.split('?')[0];
       if (hwid) hwid = decodeURIComponent(hwid).trim().replace(/\/$/, '');
-      console.log(`[API] Deleting license: "${hwid}"`);
       if (!hwid) return res.status(400).json({ message: 'HWID é obrigatório' });
-      try {
-        await fsDelete('licenses', hwid);
-        return res.json({ message: 'Licença removida com sucesso' });
-      } catch (e: any) {
-        return res.status(500).json({ message: 'Erro ao deletar licença', error: e.response?.data || e.message });
-      }
+      try { await fsDelete('licenses', hwid); return res.json({ message: 'Licença removida' }); }
+      catch (e: any) { return res.status(500).json({ message: 'Erro ao deletar licença', error: e.response?.data || e.message }); }
     }
 
     // ── Admin: Deletar ativação ─────────────────────────────────────────────────
@@ -791,14 +632,9 @@ export default async function handler(req: any, res: any) {
       if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
       let code = url.split('/delete/')[1]?.split('?')[0];
       if (code) code = decodeURIComponent(code).trim().replace(/\/$/, '');
-      console.log(`[API] Deleting activation: "${code}"`);
       if (!code) return res.status(400).json({ message: 'Código é obrigatório' });
-      try {
-        await fsDelete('activations', code.toUpperCase());
-        return res.json({ message: 'Ativação excluída com sucesso' });
-      } catch (e: any) {
-        return res.status(500).json({ message: 'Erro ao deletar ativação', error: e.response?.data || e.message });
-      }
+      try { await fsDelete('activations', code.toUpperCase()); return res.json({ message: 'Ativação excluída' }); }
+      catch (e: any) { return res.status(500).json({ message: 'Erro ao deletar ativação', error: e.response?.data || e.message }); }
     }
 
     // ── Trial por e-mail (modal hero) ────────────────────────────────────────────
@@ -806,9 +642,10 @@ export default async function handler(req: any, res: any) {
       const { email, name } = req.body;
       if (!email) return res.status(400).json({ message: 'E-mail é obrigatório' });
 
-      const allActivations = await fsList('activations');
-      const hasTrial = allActivations.some((a: any) => a.email === email && a.plano === 'Trial');
-      if (hasTrial) return res.status(400).json({ message: 'Você já solicitou um período de teste para este e-mail.' });
+      // fsGet direto no índice — evita fsList que varre tudo e causa timeout
+      const trialKey = `trial_${email.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      const existingTrial = await fsGet('trials_email', trialKey);
+      if (existingTrial) return res.status(400).json({ message: 'Você já solicitou um período de teste para este e-mail.' });
 
       const code = `R3D-TRIAL-${randomBytes(4).toString('hex').toUpperCase()}`;
       const expirationDate = new Date();
@@ -821,20 +658,23 @@ export default async function handler(req: any, res: any) {
         expiresAt: expirationDate.toISOString(),
       });
 
-      await sendEmail(email, 'Seu código TRIAL - R3D Print Manager Pro',
-        `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-          <h2 style="color:#C67D3D">Seu período de teste começou! 🚀</h2>
-          <p>Aqui está seu código de ativação TRIAL (7 dias):</p>
-          <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
-            <h1 style="color:#C67D3D;font-size:32px;margin:10px 0">${code}</h1>
-          </div>
-          <ul>
-            <li>Válida por 7 dias após a ativação.</li>
-            <li>Após o prazo, o sistema será bloqueado até a aquisição de um plano.</li>
-            <li>A licença fica vinculada ao seu Hardware ID (HWID).</li>
-          </ul>
-        </div>`
-      );
+      // Índice para lookup rápido sem fsList
+      await fsSet('trials_email', trialKey, { email, code, createdAt: new Date().toISOString() });
+
+      try {
+        await sendEmail(email, 'Seu código TRIAL - R3D Print Manager Pro',
+          `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+            <h2 style="color:#C67D3D">Seu período de teste começou! 🚀</h2>
+            <p>Olá ${name || ''}! Seu código de ativação TRIAL (7 dias):</p>
+            <div style="background:#1a1a1a;color:white;padding:20px;border-radius:12px;text-align:center;margin:20px 0">
+              <h1 style="color:#C67D3D;font-size:32px;margin:10px 0">${code}</h1>
+            </div>
+            <p>Acesse <a href="https://r3dprintmanagerpro.com.br/#license-activation">r3dprintmanagerpro.com.br</a>, insira seu HWID + este código para ativar.</p>
+          </div>`
+        );
+      } catch (emailErr: any) {
+        console.error('[Trial] Erro e-mail (não crítico):', emailErr.message);
+      }
 
       return res.json({ success: true, message: 'Código enviado para seu e-mail!' });
     }
@@ -856,15 +696,11 @@ export default async function handler(req: any, res: any) {
       return res.redirect(302, 'https://github.com/rovateduino/R3D-PRINT-MANAGER-PRO/releases/download/v2.5.0/Setup_R3D_PrintManager_Pro.exe');
     }
 
-    console.warn(`[API] 404 Not Found: ${method} ${url}`);
+    console.warn(`[API] 404: ${method} ${url}`);
     return res.status(404).json({ message: 'Not found', path: url });
 
   } catch (error: any) {
-    console.error(`[API] Global Error:`, error.message, error.stack);
-    return res.status(500).json({
-      error: 'Internal Server Error',
-      message: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    console.error(`[API] Global Error:`, error.message);
+    return res.status(500).json({ error: 'Internal Server Error', message: error.message });
   }
 }
