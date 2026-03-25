@@ -3,7 +3,7 @@ import axios from 'axios';
 import { VercelRequest, VercelResponse } from '@vercel/node';
 
 // ============================================================
-// CONFIGURAÇÃO DO FIRESTORE
+// CONFIGURAÇÃO DO FIRESTORE (COM DATABASE ID CORRETO)
 // ============================================================
 
 const FIREBASE_PROJECT_ID = 'gen-lang-client-0364203262';
@@ -163,11 +163,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // ADMIN: LIMPAR DADOS DE TESTE
+    // ADMIN: LIMPAR DADOS DE TESTE (inclui cupons)
     // ──────────────────────────────────────────────────────────────────────────
     if (url === '/api/admin/clear-test-data' && method === 'DELETE') {
       if (!isAdmin) return res.status(401).json({ message: 'Não autorizado' });
-      const collections = ['activations', 'payments', 'users', 'licenses', 'activations_by_payment'];
+      const collections = ['activations', 'payments', 'users', 'licenses', 'activations_by_payment', 'cupons'];
       const results: any = {};
       for (const col of collections) {
         const docs = await firestoreList(col);
@@ -176,7 +176,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
         results[col] = { deleted: docs.length };
       }
-      return res.json({ success: true, results });
+      return res.json({ success: true, message: 'Dados de teste (incluindo cupons) removidos com sucesso.', results });
     }
 
     // ──────────────────────────────────────────────────────────────────────────
