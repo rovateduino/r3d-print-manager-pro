@@ -146,6 +146,77 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
   const [boletoUrl, setBoletoUrl] = useState<string | null>(null);
   const [formData, setFormData] = useState({ name: '', email: '', cpfCnpj: '', phone: '', postalCode: '', addressNumber: '', cardNumber: '', cardHolder: '', cardExpiry: '', cardCcv: '' });
   const [realCode, setRealCode] = useState<string | null>(null);
+  const [polling, setPolling] = useState(false);
+
+  // Polling para verificar pagamento automaticamente
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (polling && formData.email) {
+      interval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/user/status/${formData.email}`);
+          const data = await res.json();
+          if (data.isPro) {
+            setPolling(false);
+            // Busca o código gerado
+            const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
+            const codes = await checkRes.json();
+            if (Array.isArray(codes) && codes.length > 0) {
+              setRealCode(codes[codes.length - 1].code);
+              setSuccess(true);
+            }
+          }
+        } catch (e) {}
+      }, 5000);
+    }
+    return () => clearInterval(interval);
+  }, [polling, formData.email]);
+
+  const simulateWebhook = async () => {
+    if (!formData.email) {
+      setError('Preencha o e-mail antes de simular.');
+      return;
+    }
+    setSimulating(true);
+    try {
+      const extRef = couponData ? `COUPON:${couponData.codigo}:${plan.name}:${Date.now()}` : `REF:${plan.name}:${Date.now()}`;
+      const res = await fetch('/api/asaas/webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'asaas-access-token': 'SIMULATED_TOKEN' },
+        body: JSON.stringify({
+          event: 'PAYMENT_CONFIRMED',
+          payment: {
+            id: `pay_sim_${Date.now()}`,
+            customer: 'cus_simulated',
+            value: getDiscountedPrice(),
+            externalReference: extRef,
+            status: 'CONFIRMED',
+            customerEmail: formData.email,
+            customerName: formData.name
+          }
+        })
+      });
+      
+      if (res.ok) {
+        // Aguarda processamento
+        await new Promise(r => setTimeout(r, 2000));
+        const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
+        const codes = await checkRes.json();
+        if (Array.isArray(codes) && codes.length > 0) {
+          setRealCode(codes[codes.length - 1].code);
+          setSuccess(true);
+        } else {
+          setSuccess(true);
+        }
+      } else {
+        setError('Erro ao processar simulação no servidor.');
+      }
+    } catch (err) {
+      setError('Erro de conexão ao simular webhook.');
+    } finally {
+      setSimulating(false);
+    }
+  };
 
   const simulateActivation = async () => {
     if (!formData.email) {
