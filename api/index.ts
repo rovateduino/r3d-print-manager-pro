@@ -222,9 +222,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const parts = extRef.split(':');
           const hasCoupon = parts[0] === 'COUPON';
           const couponCode = hasCoupon ? parts[1] : '';
-          const planName = hasCoupon
-            ? parts.slice(2, parts.length - 1).join(' ')
-            : parts.slice(1, parts.length - 1).join(' ');
+          
+          let planName = 'PRO';
+          if (hasCoupon) {
+            // Formato esperado: COUPON:CODIGO:PLANO:TIMESTAMP
+            // Extrai tudo entre o código do cupom (índice 1) e o timestamp (último índice)
+            planName = parts.slice(2, -1).join(':') || 'PRO';
+          } else {
+            // Formato esperado: REF:PLANO:TIMESTAMP
+            // Extrai tudo entre o prefixo REF (índice 0) e o timestamp (último índice)
+            planName = parts.slice(1, -1).join(':') || 'PRO';
+          }
+
+          console.log(`[Webhook] Plano identificado: ${planName} (Referência: ${extRef})`);
 
           const installmentNumber = payment.installmentNumber || 1;
           const isFirstInstallment = installmentNumber === 1;
@@ -534,12 +544,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── Asaas: PIX QR Code ──────────────────────────────────────────────────────
     if (url.includes('/api/asaas/pix-qrcode') && method === 'GET') {
-      const paymentId = req.query?.paymentId || url.split('paymentId=')[1]?.split('&')[0];
-      if (!paymentId) return res.status(400).json({ message: 'paymentId ausente' });
+      let paymentId = (req.query?.paymentId as string) || url.split('paymentId=')[1]?.split('&')[0];
+      if (paymentId) paymentId = paymentId.trim();
+
+      console.log(`[PIX] Buscando QR Code para o pagamento: ${paymentId}`);
+
+      if (!paymentId || paymentId === 'undefined' || paymentId === '') {
+        console.warn('[PIX] Erro: paymentId ausente ou inválido');
+        return res.status(400).json({ message: 'paymentId ausente ou inválido' });
+      }
+
       try {
-        const r = await axios.get(`${asaasUrl()}/payments/${paymentId}/pixQrCode`, { headers: { access_token: process.env.ASAAS_API_KEY || '' } });
+        const r = await axios.get(`${asaasUrl()}/payments/${paymentId}/pixQrCode`, { 
+          headers: { access_token: process.env.ASAAS_API_KEY || '' } 
+        });
         return res.json(r.data);
-      } catch (e: any) { return res.status(e.response?.status || 500).json({ message: 'Erro ao buscar QR Code PIX' }); }
+      } catch (e: any) { 
+        console.error(`[PIX] Erro na API Asaas para ${paymentId}:`, e.response?.data || e.message);
+        return res.status(e.response?.status || 500).json(e.response?.data || { message: 'Erro ao buscar QR Code PIX' }); 
+      }
     }
 
     // ── Status do usuário ───────────────────────────────────────────────────────
@@ -1016,6 +1039,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!email || !plano) {
         return res.status(400).json({ message: 'E-mail e plano são obrigatórios' });
       }
+
+      console.log(`[Simulação] Iniciando para ${email}, Plano: ${plano}, ID: ${paymentId}`);
 
       try {
         // Gera código único
