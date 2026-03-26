@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   LayoutDashboard, BookOpen, FileText, Settings, TrendingUp, BarChart3,
   ShieldCheck, Download, CheckCircle2, ChevronDown, Menu, X, Clock,
@@ -150,22 +150,31 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
   const [pixExpired, setPixExpired] = useState(false);
   const [fetchingPix, setFetchingPix] = useState(false);
   const [checkingManual, setCheckingManual] = useState(false);
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   // Polling para verificar pagamento automaticamente
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (polling && formData.email) {
+    let interval: NodeJS.Timeout | null = null;
+    if (polling && formData.email && !success) {
       console.log(`[PIX Debug] Iniciando polling para ${formData.email}`);
       interval = setInterval(async () => {
+        if (!isMounted.current) return;
         try {
           const res = await fetch(`/api/user/status/${formData.email}`);
           const data = await res.json();
+          if (!isMounted.current) return;
           if (data.isPro) {
             console.log(`[PIX Debug] Pagamento confirmado via polling!`);
             setPolling(false);
             // Busca o código gerado
             const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
             const codes = await checkRes.json();
+            if (!isMounted.current) return;
             if (Array.isArray(codes) && codes.length > 0) {
               setRealCode(codes[codes.length - 1].code);
               setSuccess(true);
@@ -178,8 +187,8 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
         }
       }, 5000);
     }
-    return () => clearInterval(interval);
-  }, [polling, formData.email]);
+    return () => { if (interval) clearInterval(interval); };
+  }, [polling, formData.email, success]);
 
   const checkPaymentStatus = async () => {
     if (!formData.email) return;
@@ -188,11 +197,13 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
     try {
       const res = await fetch(`/api/user/status/${formData.email}`);
       const data = await res.json();
+      if (!isMounted.current) return;
       if (data.isPro) {
         console.log(`[PIX Debug] Pagamento confirmado manualmente!`);
         setPolling(false);
         const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
         const codes = await checkRes.json();
+        if (!isMounted.current) return;
         if (Array.isArray(codes) && codes.length > 0) {
           setRealCode(codes[codes.length - 1].code);
           setSuccess(true);
@@ -204,13 +215,13 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
         if (btn) {
           const originalText = btn.innerText;
           btn.innerText = 'AINDA PENDENTE...';
-          setTimeout(() => { btn.innerText = originalText; }, 2000);
+          setTimeout(() => { if (isMounted.current && btn) btn.innerText = originalText; }, 2000);
         }
       }
     } catch (e) {
       console.error(`[PIX Debug] Erro na verificação manual:`, e);
     } finally {
-      setCheckingManual(false);
+      if (isMounted.current) setCheckingManual(false);
     }
   };
 
@@ -372,25 +383,31 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
         const pixTx = payment.pixTransaction;
         if (pixTx?.qrCode?.payload) {
           console.log('[PIX Debug] QR Code recebido na resposta inicial');
-          setPixData({ qrCode: pixTx.qrCode.payload, qrCodeImage: pixTx.qrCode.encodedImage || '' });
-          setPolling(true);
+          if (isMounted.current) {
+            setPixData({ qrCode: pixTx.qrCode.payload, qrCodeImage: pixTx.qrCode.encodedImage || '' });
+            setPolling(true);
+          }
         } else if (payment.id) {
-          setFetchingPix(true);
+          if (isMounted.current) setFetchingPix(true);
           try {
             console.log(`[PIX Debug] Buscando QR Code para ID: ${payment.id} após delay...`);
             // Aguarda 1.5s para o Asaas processar a cobrança recém-criada
             await new Promise(r => setTimeout(r, 1500));
             
+            if (!isMounted.current) return;
             const pixRes = await fetch(`/api/asaas/pix-qrcode?paymentId=${payment.id}`);
             if (pixRes.status === 410) {
               console.warn('[PIX Debug] QR Code expirado (410). Regenerando...');
-              setPixExpired(true);
-              setPolling(false);
-              // Tenta regenerar automaticamente chamando handleSubmit novamente
-              setTimeout(() => handleSubmit(e), 2000);
+              if (isMounted.current) {
+                setPixExpired(true);
+                setPolling(false);
+                // Tenta regenerar automaticamente chamando handleSubmit novamente
+                setTimeout(() => { if (isMounted.current) handleSubmit(e); }, 2000);
+              }
               return;
             }
             const pixJson = await pixRes.json();
+            if (!isMounted.current) return;
             if (pixJson?.payload) {
               console.log('[PIX Debug] QR Code obtido com sucesso via rota secundária');
               setPixData({ qrCode: pixJson.payload, qrCodeImage: pixJson.encodedImage || '' });
@@ -401,27 +418,31 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
             }
           } catch (pixErr) {
             console.error('[PIX Debug] Erro ao buscar QR Code:', pixErr);
-            setSuccess(true);
+            if (isMounted.current) setSuccess(true);
           } finally {
-            setFetchingPix(false);
+            if (isMounted.current) setFetchingPix(false);
           }
         } else {
           console.warn('[PIX Debug] Pagamento criado sem ID e sem pixTransaction');
-          setSuccess(true);
+          if (isMounted.current) setSuccess(true);
         }
       } else if (paymentMethod === 'BOLETO') {
         if (payment.bankSlipUrl) {
-          setBoletoUrl(payment.bankSlipUrl);
-          setPolling(true);
+          if (isMounted.current) {
+            setBoletoUrl(payment.bankSlipUrl);
+            setPolling(true);
+          }
         }
-        else setSuccess(true);
+        else if (isMounted.current) setSuccess(true);
       } else {
-        setSuccess(true);
+        if (isMounted.current) setSuccess(true);
       }
     } catch (err: any) {
-      setError(err.message || 'Erro inesperado durante o checkout.');
+      if (isMounted.current) {
+        setError(err.message || 'Erro inesperado durante o checkout.');
+      }
       console.error('[Checkout Error]', err);
-    } finally { setLoading(false); }
+    } finally { if (isMounted.current) setLoading(false); }
   };
 
   const ic = "w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm focus:border-[#C67D3D] outline-none text-white placeholder-gray-600";
