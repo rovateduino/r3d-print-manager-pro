@@ -149,16 +149,19 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
   const [polling, setPolling] = useState(false);
   const [pixExpired, setPixExpired] = useState(false);
   const [fetchingPix, setFetchingPix] = useState(false);
+  const [checkingManual, setCheckingManual] = useState(false);
 
   // Polling para verificar pagamento automaticamente
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (polling && formData.email) {
+      console.log(`[PIX Debug] Iniciando polling para ${formData.email}`);
       interval = setInterval(async () => {
         try {
           const res = await fetch(`/api/user/status/${formData.email}`);
           const data = await res.json();
           if (data.isPro) {
+            console.log(`[PIX Debug] Pagamento confirmado via polling!`);
             setPolling(false);
             // Busca o código gerado
             const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
@@ -167,12 +170,49 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
               setRealCode(codes[codes.length - 1].code);
               setSuccess(true);
             }
+          } else {
+            console.log(`[PIX Debug] Pagamento ainda pendente...`);
           }
-        } catch (e) {}
+        } catch (e) {
+          console.error(`[PIX Debug] Erro no polling:`, e);
+        }
       }, 5000);
     }
     return () => clearInterval(interval);
   }, [polling, formData.email]);
+
+  const checkPaymentStatus = async () => {
+    if (!formData.email) return;
+    setCheckingManual(true);
+    console.log(`[PIX Debug] Verificação manual solicitada para ${formData.email}`);
+    try {
+      const res = await fetch(`/api/user/status/${formData.email}`);
+      const data = await res.json();
+      if (data.isPro) {
+        console.log(`[PIX Debug] Pagamento confirmado manualmente!`);
+        setPolling(false);
+        const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
+        const codes = await checkRes.json();
+        if (Array.isArray(codes) && codes.length > 0) {
+          setRealCode(codes[codes.length - 1].code);
+          setSuccess(true);
+        }
+      } else {
+        console.log(`[PIX Debug] Pagamento ainda não detectado na verificação manual.`);
+        // Feedback visual rápido se não confirmado
+        const btn = document.getElementById('manual-check-btn');
+        if (btn) {
+          const originalText = btn.innerText;
+          btn.innerText = 'AINDA PENDENTE...';
+          setTimeout(() => { btn.innerText = originalText; }, 2000);
+        }
+      }
+    } catch (e) {
+      console.error(`[PIX Debug] Erro na verificação manual:`, e);
+    } finally {
+      setCheckingManual(false);
+    }
+  };
 
   const simulateWebhook = async () => {
     if (!formData.email) {
@@ -489,16 +529,32 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
                   <button onClick={() => { navigator.clipboard.writeText(pixData.qrCode); }} className="w-full bg-[#C67D3D] hover:bg-[#EA580C] text-white py-3 rounded-xl font-black transition-all text-sm flex items-center justify-center gap-2">
                     <Copy className="w-4 h-4" />COPIAR CÓDIGO PIX
                   </button>
+                  <button 
+                    id="manual-check-btn"
+                    onClick={checkPaymentStatus} 
+                    disabled={checkingManual}
+                    className="w-full bg-white/5 hover:bg-white/10 text-white py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 border border-white/10"
+                  >
+                    {checkingManual ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCcw className="w-4 h-4" />}
+                    JÁ PAGUEI? VERIFICAR STATUS
+                  </button>
                   {import.meta.env.VITE_ASAAS_ENV !== 'production' && (
                     <button onClick={simulateWebhook} disabled={simulating} className="w-full bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 py-3 rounded-xl font-black border border-blue-500/30 transition-all flex items-center justify-center gap-2 text-sm">
                       {simulating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}SIMULAR PAGAMENTO (TESTE)
                     </button>
                   )}
                 </div>
-                <p className="text-[10px] text-gray-500 my-4">Aprovação automática após o pagamento. O acesso é liberado em segundos.</p>
+                <div className="mt-4 p-3 bg-[#C67D3D]/5 border border-[#C67D3D]/10 rounded-xl">
+                  <p className="text-[10px] text-[#C67D3D] font-bold uppercase mb-1 flex items-center gap-1 justify-center">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Aguardando Pagamento...
+                  </p>
+                  <p className="text-[9px] text-gray-500 text-center leading-tight">
+                    O QR Code permanecerá na tela até a confirmação automática do banco. Isso leva poucos segundos.
+                  </p>
+                </div>
               </>
             )}
-            <button onClick={onClose} className="w-full bg-white/5 text-white py-3 rounded-xl font-bold text-sm">FECHAR</button>
+            <button onClick={onClose} className="w-full mt-4 bg-white/5 text-white py-3 rounded-xl font-bold text-sm">CANCELAR E FECHAR</button>
           </div>
         )}
 
