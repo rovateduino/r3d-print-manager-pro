@@ -147,6 +147,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
   const [formData, setFormData] = useState({ name: '', email: '', cpfCnpj: '', phone: '', postalCode: '', addressNumber: '', cardNumber: '', cardHolder: '', cardExpiry: '', cardCcv: '' });
   const [realCode, setRealCode] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
+  const [pixExpired, setPixExpired] = useState(false);
 
   // Polling para verificar pagamento automaticamente
   useEffect(() => {
@@ -332,6 +333,11 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
         } else if (payment.id) {
           try {
             const pixRes = await fetch(`/api/asaas/pix-qrcode?paymentId=${payment.id}`);
+            if (pixRes.status === 410) {
+              setPixExpired(true);
+              setPolling(false);
+              return;
+            }
             const pixJson = await pixRes.json();
             if (pixJson?.payload) {
               setPixData({ qrCode: pixJson.payload, qrCodeImage: pixJson.encodedImage || '' });
@@ -428,27 +434,46 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
           <div className="text-center py-4">
             <QrCode className="w-10 h-10 text-[#C67D3D] mx-auto mb-3" />
             <h2 className="text-xl font-black text-white mb-1">Pague via PIX</h2>
-            <p className="text-gray-400 text-sm mb-4">Escaneie o QR Code ou copie o código abaixo</p>
-            {pixData.qrCodeImage && (
-              <div className="bg-white p-4 rounded-2xl inline-block mb-4">
-                <img src={`data:image/png;base64,${pixData.qrCodeImage}`} alt="QR Code PIX" className="w-48 h-48 mx-auto" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-              </div>
-            )}
-            <div className="bg-white/5 border border-white/10 rounded-xl p-3 mb-4 text-left">
-              <p className="text-[10px] text-gray-500 uppercase font-bold mb-1">Código PIX Copia e Cola</p>
-              <p className="text-xs text-gray-300 break-all font-mono">{pixData.qrCode}</p>
-            </div>
-            <div className="space-y-3">
-              <button onClick={() => { navigator.clipboard.writeText(pixData.qrCode); }} className="w-full bg-[#C67D3D] hover:bg-[#EA580C] text-white py-3 rounded-xl font-black transition-all text-sm flex items-center justify-center gap-2">
-                <Copy className="w-4 h-4" />COPIAR CÓDIGO PIX
-              </button>
-              {import.meta.env.VITE_ASAAS_ENV !== 'production' && (
-                <button onClick={simulateWebhook} disabled={simulating} className="w-full bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 py-3 rounded-xl font-black border border-blue-500/30 transition-all flex items-center justify-center gap-2 text-sm">
-                  {simulating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}SIMULAR PAGAMENTO (TESTE)
+            
+            {pixExpired ? (
+              <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-2xl mb-6">
+                <p className="text-red-400 text-sm mb-4">O QR Code expirou. Por favor, gere um novo pagamento.</p>
+                <button 
+                  onClick={() => {
+                    setPixData(null);
+                    setPixExpired(false);
+                    setStep(3); // Volta para a revisão/confirmação
+                  }} 
+                  className="w-full bg-white/10 hover:bg-white/20 text-white py-3 rounded-xl font-bold text-sm transition-all"
+                >
+                  GERAR NOVO PAGAMENTO
                 </button>
-              )}
-            </div>
-            <p className="text-[10px] text-gray-500 my-4">Aprovação automática após o pagamento. O acesso é liberado em segundos.</p>
+              </div>
+            ) : (
+              <>
+                <p className="text-gray-400 text-sm mb-4">Escaneie o QR Code ou copie o código abaixo</p>
+                {pixData.qrCodeImage && (
+                  <div className="bg-white p-4 rounded-2xl inline-block mb-4">
+                    <img src={`data:image/png;base64,${pixData.qrCodeImage}`} alt="QR Code PIX" className="w-48 h-48 mx-auto" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                  </div>
+                )}
+                <div className="bg-white/5 border border-white/10 rounded-xl p-3 mb-4 text-left">
+                  <p className="text-[10px] text-gray-500 uppercase font-bold mb-1">Código PIX Copia e Cola</p>
+                  <p className="text-xs text-gray-300 break-all font-mono">{pixData.qrCode}</p>
+                </div>
+                <div className="space-y-3">
+                  <button onClick={() => { navigator.clipboard.writeText(pixData.qrCode); }} className="w-full bg-[#C67D3D] hover:bg-[#EA580C] text-white py-3 rounded-xl font-black transition-all text-sm flex items-center justify-center gap-2">
+                    <Copy className="w-4 h-4" />COPIAR CÓDIGO PIX
+                  </button>
+                  {import.meta.env.VITE_ASAAS_ENV !== 'production' && (
+                    <button onClick={simulateWebhook} disabled={simulating} className="w-full bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 py-3 rounded-xl font-black border border-blue-500/30 transition-all flex items-center justify-center gap-2 text-sm">
+                      {simulating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}SIMULAR PAGAMENTO (TESTE)
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-gray-500 my-4">Aprovação automática após o pagamento. O acesso é liberado em segundos.</p>
+              </>
+            )}
             <button onClick={onClose} className="w-full bg-white/5 text-white py-3 rounded-xl font-bold text-sm">FECHAR</button>
           </div>
         )}
