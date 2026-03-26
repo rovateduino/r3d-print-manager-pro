@@ -162,21 +162,22 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
   useEffect(() => {
     let timer: NodeJS.Timeout | null = null;
     if (pixData && !success && !pixExpired) {
-      if (pixTimeRemaining === null) setPixTimeRemaining(300); // 5 minutos (300s)
+      if (pixTimeRemaining === null && isMounted.current) setPixTimeRemaining(300); // 5 minutos (300s)
       
       timer = setInterval(() => {
+        if (!isMounted.current) return;
         setPixTimeRemaining(prev => {
           if (prev === null) return 300;
           if (prev <= 1) {
             console.warn('[PIX Timer] Tempo esgotado. Marcando como expirado para renovação.');
-            setPixExpired(true);
+            if (isMounted.current) setPixExpired(true);
             return 0;
           }
           return prev - 1;
         });
       }, 1000);
     } else {
-      setPixTimeRemaining(null);
+      if (isMounted.current) setPixTimeRemaining(null);
     }
     return () => { if (timer) clearInterval(timer); };
   }, [pixData, success, pixExpired]);
@@ -267,10 +268,10 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
 
   const simulateWebhook = async () => {
     if (!formData.email) {
-      setError('Preencha o e-mail antes de simular.');
+      if (isMounted.current) setError('Preencha o e-mail antes de simular.');
       return;
     }
-    setSimulating(true);
+    if (isMounted.current) setSimulating(true);
     try {
       const extRef = couponData ? `COUPON:${couponData.codigo}:${plan.name}:${Date.now()}` : `REF:${plan.name}:${Date.now()}`;
       const res = await fetch('/api/asaas/webhook', {
@@ -290,11 +291,14 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
         })
       });
       
+      if (!isMounted.current) return;
       if (res.ok) {
         // Aguarda processamento
         await new Promise(r => setTimeout(r, 2000));
+        if (!isMounted.current) return;
         const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
         const codes = await checkRes.json();
+        if (!isMounted.current) return;
         if (Array.isArray(codes) && codes.length > 0) {
           setRealCode(codes[codes.length - 1].code);
           setSuccess(true);
@@ -305,20 +309,22 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
         setError('Erro ao processar simulação no servidor.');
       }
     } catch (err) {
-      setError('Erro de conexão ao simular webhook.');
+      if (isMounted.current) setError('Erro de conexão ao simular webhook.');
     } finally {
-      setSimulating(false);
+      if (isMounted.current) setSimulating(false);
     }
   };
 
   const simulateActivation = async () => {
     if (!formData.email) {
-      setError('Preencha o e-mail antes de simular o pagamento.');
-      setStep(1);
+      if (isMounted.current) {
+        setError('Preencha o e-mail antes de simular o pagamento.');
+        setStep(1);
+      }
       return;
     }
-    setSimulating(true);
-    setError(null);
+    if (isMounted.current) setSimulating(true);
+    if (isMounted.current) setError(null);
     try {
       const extRef = couponData
         ? `COUPON:${couponData.codigo}:${plan.name}:${Date.now()}`
@@ -338,7 +344,9 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
           paymentId: extRef,
         }),
       });
+      if (!isMounted.current) return;
       const data = await response.json();
+      if (!isMounted.current) return;
       if (response.ok && data.code) {
         setSimulatedCode(data.code);
         setSuccess(true);
@@ -348,13 +356,16 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
         setError(data.message || 'Erro na simulação');
       }
     } catch (err) {
-      setError('Erro de conexão na simulação');
+      if (isMounted.current) setError('Erro de conexão na simulação');
     } finally {
-      setSimulating(false);
+      if (isMounted.current) setSimulating(false);
     }
   };
 
-  const handleInput = (e: React.ChangeEvent<HTMLInputElement>) => { setFormData({ ...formData, [e.target.name]: e.target.value }); if (error) setError(null); };
+  const handleInput = (e: React.ChangeEvent<HTMLInputElement>) => { 
+    setFormData({ ...formData, [e.target.name]: e.target.value }); 
+    if (error && isMounted.current) setError(null); 
+  };
   const getBasePrice = () => parseFloat(plan.price.replace('R$ ', '').replace(/\./g, '').replace(',', '.'));
   const getDiscountedPrice = () => {
     const base = getBasePrice();
@@ -365,28 +376,48 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
 
   const validateCoupon = async () => {
     if (!couponCode) return;
-    setValidatingCoupon(true); setCouponError(null); setCouponData(null);
+    if (isMounted.current) {
+      setValidatingCoupon(true); 
+      setCouponError(null); 
+      setCouponData(null);
+    }
     try {
       const res = await fetch(`/api/cupom/validar?codigo=${couponCode.toUpperCase()}`);
       const data = await res.json();
+      if (!isMounted.current) return;
       if (res.ok) setCouponData(data); else setCouponError(data.message || 'Cupom inválido');
-    } catch { setCouponError('Erro ao validar'); } finally { setValidatingCoupon(false); }
+    } catch { 
+      if (isMounted.current) setCouponError('Erro ao validar'); 
+    } finally { 
+      if (isMounted.current) setValidatingCoupon(false); 
+    }
   };
 
   const checkStatus = async () => {
     if (!formData.email) return;
-    setCheckingStatus(true);
-    try { setUserStatus(await (await fetch(`/api/user/status/${formData.email}`)).json()); }
-    catch {} finally { setCheckingStatus(false); }
+    if (isMounted.current) setCheckingStatus(true);
+    try { 
+      const res = await fetch(`/api/user/status/${formData.email}`);
+      const data = await res.json();
+      if (isMounted.current) setUserStatus(data); 
+    }
+    catch {} finally { 
+      if (isMounted.current) setCheckingStatus(false); 
+    }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault(); setLoading(true); setError(null);
+  const handleSubmit = async (e: React.FormEvent | null) => {
+    if (e) e.preventDefault(); 
+    if (isMounted.current) {
+      setLoading(true); 
+      setError(null);
+    }
     try {
       const custRes = await fetch('/api/asaas/customer', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: formData.name, email: formData.email, cpfCnpj: formData.cpfCnpj, mobilePhone: formData.phone, postalCode: formData.postalCode, addressNumber: formData.addressNumber })
       });
+      if (!isMounted.current) return;
       let customer: any;
       try { customer = await custRes.json(); } catch { throw new Error('Erro no servidor ao processar cliente.'); }
       if (!custRes.ok) throw new Error(customer.errors?.[0]?.description || customer.message || 'Erro ao criar cliente');
@@ -418,6 +449,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
         payloadBase.value = parseFloat(finalValue.toFixed(2));
       }
 
+      if (!isMounted.current) return;
       const payRes = await fetch('/api/asaas/payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payloadBase) });
       let payment: any;
       try { payment = await payRes.json(); } catch { throw new Error('Erro no servidor ao processar pagamento.'); }
@@ -448,7 +480,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
                 setPixExpired(true);
                 setPolling(false);
                 // Tenta regenerar automaticamente chamando handleSubmit novamente
-                setTimeout(() => { if (isMounted.current) handleSubmit(e); }, 2000);
+                setTimeout(() => { if (isMounted.current) handleSubmit(null); }, 2000);
               }
               return;
             }
