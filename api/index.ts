@@ -617,28 +617,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── Status do usuário ───────────────────────────────────────────────────────
     if (url.includes('/api/user/status/') && method === 'GET') {
       const email = decodeURIComponent(url.split('/api/user/status/')[1]);
-      const data = await fsGet('users', email);
+      const userDoc = await db.collection('users').doc(email).get();
+      const userData = userDoc.exists ? userDoc.data() : null;
       
-      if (data && data.isPro) {
-        // Se for PRO, tenta buscar o código de ativação mais recente
-        try {
-          const allActivations = await fsList('activations');
-          const userActivations = allActivations
-            .filter((a: any) => a.email?.toLowerCase() === email.toLowerCase())
-            .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          
-          if (userActivations.length > 0) {
-            return res.json({ 
-              ...data, 
-              activationCode: userActivations[0].code 
-            });
-          }
-        } catch (e) {
-          console.error('[Status] Erro ao buscar código:', e);
-        }
+      // Buscar o código de ativação mais recente para este email
+      try {
+        const activations = await db.collection('activations')
+          .where('email', '==', email)
+          .orderBy('createdAt', 'desc')
+          .limit(1)
+          .get();
+
+        const latestActivation = activations.docs[0]?.data();
+
+        return res.json({
+          isPro: userData?.isPro || false,
+          plano: userData?.plano || null,
+          activationCode: latestActivation?.code || null,
+          paymentId: latestActivation?.paymentId || null
+        });
+      } catch (e) {
+        console.error('[Status] Erro ao buscar ativações:', e);
+        return res.json(userData || { isPro: false });
       }
-      
-      return res.json(data || { isPro: false });
     }
 
     // ── Trial direto por HWID ───────────────────────────────────────────────────
