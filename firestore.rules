@@ -27,6 +27,16 @@ service cloud.firestore {
     //   - event: string (optional)
     //   - processedAt: string (optional, ISO 8601)
     //
+    // Collection: activations
+    // Document ID: code (string)
+    // Fields:
+    //   - code: string (required)
+    //   - email: string (required, email format)
+    //   - plano: string (optional)
+    //   - paymentId: string (required)
+    //   - status: string (optional)
+    //   - createdAt: string (optional, ISO 8601)
+    //
     // ===============================================================
 
     // ===============================================================
@@ -72,6 +82,14 @@ service cloud.firestore {
     match /payments/{paymentId} {
       // Only admins can read/write payment logs
       allow read, write: if isAdmin();
+    }
+    
+    match /activations/{code} {
+      // Users can only read their own activations
+      allow read: if (isAuthenticated() && request.auth.token.email == resource.data.email) || isAdmin();
+      
+      // Only admins can create/update/delete activations
+      allow create, update, delete: if isAdmin();
     }
 
     // Default deny
