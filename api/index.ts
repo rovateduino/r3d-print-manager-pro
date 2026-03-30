@@ -176,6 +176,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const method = req.method || 'GET';
     console.log('[DEBUG] URL:', url, 'Method:', method);
     
+    // ── HELPER: GERAR CÓDIGO ÚNICO ──────────────────────────────────────────────
+    async function generateUniqueCode() {
+      let code = '';
+      let exists = true;
+      let attempts = 0;
+      while (exists && attempts < 10) {
+        const randomPart = randomBytes(8).toString('hex').toUpperCase();
+        const formattedRandom = randomPart.match(/.{1,4}/g)?.join('-') || randomPart;
+        code = `R3D-ACT-${formattedRandom}`;
+        const snap = await db.collection('activations').doc(code).get();
+        exists = snap.exists;
+        attempts++;
+      }
+      return code;
+    }
+
     // ── Asaas: Webhook ──────────────────────────────────────────────────────────
     // IMPORTANTE: Esta rota deve vir ANTES de qualquer return 404 ou outras rotas genéricas.
     if (url.includes('/api/asaas/webhook') && method === 'POST') {
@@ -269,11 +285,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
             if (actByPaySnap.exists) {
               generatedCode = actByPaySnap.data()?.code;
+              console.log(`[Webhook] Código já existente para pagamento ${payment.id}: ${generatedCode}`);
             } else {
-              const code = `R3D-ACT-${randomBytes(6).toString('hex').toUpperCase().match(/.{1,4}/g)?.join('-')}`;
+              const code = await generateUniqueCode();
               generatedCode = code;
+              console.log(`[Webhook] Gerando novo código para pagamento ${payment.id}: ${generatedCode}`);
+              
               const expirationDate = new Date();
-              expirationDate.setDate(expirationDate.getDate() + 7);
+              expirationDate.setDate(expirationDate.getDate() + 30); // 30 dias para ativar
 
               const activationData = {
                 code,
@@ -599,6 +618,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (url.includes('/api/user/status/') && method === 'GET') {
       const email = decodeURIComponent(url.split('/api/user/status/')[1]);
       const data = await fsGet('users', email);
+      
+      if (data && data.isPro) {
+        // Se for PRO, tenta buscar o código de ativação mais recente
+        try {
+          const allActivations = await fsList('activations');
+          const userActivations = allActivations
+            .filter((a: any) => a.email?.toLowerCase() === email.toLowerCase())
+            .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          
+          if (userActivations.length > 0) {
+            return res.json({ 
+              ...data, 
+              activationCode: userActivations[0].code 
+            });
+          }
+        } catch (e) {
+          console.error('[Status] Erro ao buscar código:', e);
+        }
+      }
+      
       return res.json(data || { isPro: false });
     }
 
@@ -1074,9 +1113,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       try {
         // Gera código único
-        const randomPart = randomBytes(6).toString('hex').toUpperCase();
-        const formattedRandom = randomPart.match(/.{1,4}/g)?.join('-') || randomPart;
-        const activationCode = `R3D-ACT-${formattedRandom}`;
+        const activationCode = await generateUniqueCode();
         const expirationDate = new Date();
         expirationDate.setDate(expirationDate.getDate() + 7); // 7 dias para ativar
 
