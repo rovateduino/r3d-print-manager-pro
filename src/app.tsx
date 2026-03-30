@@ -185,7 +185,8 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
   // Polling para verificar pagamento automaticamente
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null;
-    if (polling && formData.email && !success) {
+    // Só inicia polling se tiver um pagamento PIX pendente e o usuário NÃO for PRO ainda
+    if (polling && formData.email && !success && pixData && !userStatus?.isPro) {
       console.log(`[PIX Debug] Iniciando polling para ${formData.email}`);
       interval = setInterval(async () => {
         if (!isMounted.current) return;
@@ -194,10 +195,12 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
           const data = await res.json();
           if (!isMounted.current) return;
           
+          // Só confirma se o usuário virou PRO (pagamento foi processado)
           if (data.isPro) {
             console.log(`[PIX Debug] Pagamento confirmado via polling!`);
             setPolling(false);
             
+            // Busca o código de ativação
             const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
             const codes = await checkRes.json();
             if (!isMounted.current) return;
@@ -214,7 +217,14 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
       }, 5000);
     }
     return () => { if (interval) clearInterval(interval); };
-  }, [polling, formData.email, success]);
+  }, [polling, formData.email, success, pixData, userStatus?.isPro]);
+
+  // Resetar userStatus quando email mudar
+  useEffect(() => {
+    if (isMounted.current) {
+      setUserStatus(null);
+    }
+  }, [formData.email]);
 
   const checkPaymentStatus = async () => {
     if (!formData.email) return;
@@ -406,6 +416,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
           if (isMounted.current) {
             setPixData({ qrCode: pixTx.qrCode.payload, qrCodeImage: pixTx.qrCode.encodedImage || '' });
             setPolling(true);
+            setUserStatus(null); // Garante que não vai confirmar automaticamente
           }
         } else if (payment.id) {
           if (isMounted.current) setFetchingPix(true);
@@ -430,6 +441,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
               console.log('[PIX Debug] QR Code obtido com sucesso via rota secundária');
               setPixData({ qrCode: pixJson.payload, qrCodeImage: pixJson.encodedImage || '' });
               setPolling(true);
+              setUserStatus(null); // Garante que não vai confirmar automaticamente
             } else {
               console.error('[PIX Debug] Rota pix-qrcode retornou sucesso mas sem payload');
               if (isMounted.current) {
