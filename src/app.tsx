@@ -209,16 +209,25 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
           const res = await fetch(`/api/user/status/${formData.email}`);
           const data = await res.json();
           if (!isMounted.current) return;
+          
           if (data.isPro) {
             console.log(`[PIX Debug] Pagamento confirmado via polling!`);
             setPolling(false);
-            // Busca o código gerado
-            const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
-            const codes = await checkRes.json();
-            if (!isMounted.current) return;
-            if (Array.isArray(codes) && codes.length > 0) {
-              setRealCode(codes[codes.length - 1].code);
+            
+            if (data.activationCode) {
+              setRealCode(data.activationCode);
               setSuccess(true);
+            } else {
+              // Fallback se o código não veio no status
+              const checkRes = await fetch(`/api/license/recover?email=${encodeURIComponent(formData.email)}`);
+              const codes = await checkRes.json();
+              if (!isMounted.current) return;
+              if (Array.isArray(codes) && codes.length > 0) {
+                setRealCode(codes[codes.length - 1].code);
+                setSuccess(true);
+              } else {
+                setSuccess(true); // Sem código, mas confirmado
+              }
             }
           } else {
             console.log(`[PIX Debug] Pagamento ainda pendente...`);
@@ -406,6 +415,10 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
     }
   };
 
+  const handleSimulatePayment = () => {
+    simulateActivation();
+  };
+
   const handleSubmit = async (e: React.FormEvent | null) => {
     if (e) e.preventDefault(); 
     if (isMounted.current) {
@@ -423,6 +436,13 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
       if (!custRes.ok) throw new Error(customer.errors?.[0]?.description || customer.message || 'Erro ao criar cliente');
 
       const finalValue = getDiscountedPrice();
+      console.log(`[Checkout Debug] Iniciando handleSubmit:`, {
+        plan: plan.name,
+        method: paymentMethod,
+        email: formData.email,
+        finalValue,
+        coupon: couponData?.codigo
+      });
       const { valorParcela } = getParcelamento();
       const extRef = couponData ? `COUPON:${couponData.codigo}:${plan.name}:${Date.now()}` : `REF:${plan.name}:${Date.now()}`;
 
@@ -453,6 +473,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
       const payRes = await fetch('/api/asaas/payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payloadBase) });
       let payment: any;
       try { payment = await payRes.json(); } catch { throw new Error('Erro no servidor ao processar pagamento.'); }
+      console.log(`[Checkout Debug] Resposta do pagamento:`, payment);
       if (!payRes.ok) throw new Error(payment.errors?.[0]?.description || payment.message || 'Erro no pagamento');
 
       console.log(`[PIX Debug] Pagamento criado: ${payment.id}, Billing: ${payment.billingType}`);
@@ -496,13 +517,20 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
             }
           } catch (pixErr) {
             console.error('[PIX Debug] Erro ao buscar QR Code:', pixErr);
-            if (isMounted.current) setSuccess(true);
+            if (isMounted.current) {
+              setError('Erro ao gerar QR Code PIX. Por favor, tente novamente ou use outro método.');
+              setPixData(null);
+              setStep(3);
+            }
           } finally {
             if (isMounted.current) setFetchingPix(false);
           }
         } else {
           console.warn('[PIX Debug] Pagamento criado sem ID e sem pixTransaction');
-          if (isMounted.current) setSuccess(true);
+          if (isMounted.current) {
+            setError('Erro ao processar pagamento PIX no Asaas. Tente novamente.');
+            setStep(3);
+          }
         }
       } else if (paymentMethod === 'BOLETO') {
         if (payment.bankSlipUrl) {
@@ -511,8 +539,12 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
             setPolling(true);
           }
         }
-        else if (isMounted.current) setSuccess(true);
+        else if (isMounted.current) {
+          setError('Erro ao gerar link do boleto. Tente novamente.');
+          setStep(3);
+        }
       } else {
+        // Cartão de Crédito
         if (isMounted.current) setSuccess(true);
       }
     } catch (err: any) {
@@ -864,6 +896,15 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
                       {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
                       {loading ? 'PROCESSANDO...' : paymentMethod === 'PIX' ? 'GERAR QR CODE' : paymentMethod === 'BOLETO' ? 'GERAR BOLETO' : installments > 1 ? `PAGAR ${installments}x R$ ${formatBRL(getParcelamento().valorParcela)}` : `PAGAR R$ ${formatBRL(getDiscountedPrice())}`}
                     </button>
+                    {import.meta.env.DEV && (
+                      <button 
+                        type="button" 
+                        onClick={handleSimulatePayment} 
+                        className="flex-1 bg-white/5 hover:bg-white/10 text-gray-400 py-3 rounded-2xl font-bold text-[10px] transition-all"
+                      >
+                        SIMULAR
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
