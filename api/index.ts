@@ -1165,9 +1165,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // ── Download ────────────────────────────────────────────────────────────────
+    // ── Download com contador ────────────────────────────────────────────────────
     if (url.includes('/api/download')) {
+      // Incrementa contador no Firestore
+      try {
+        const stats = await fsGet('stats', 'downloads') || { total: 0, historico: [] };
+        await fsSet('stats', 'downloads', {
+          total: (Number(stats.total) || 0) + 1,
+          ultimoDownload: new Date().toISOString(),
+          historico: [
+            ...((stats.historico || []).slice(-99)), // mantém últimos 100
+            { data: new Date().toISOString(), ip: req.headers['x-forwarded-for'] || 'desconhecido' }
+          ]
+        });
+      } catch (e) { /* silencioso — não impede o download */ }
       return res.redirect(302, 'https://github.com/rovateduino/R3D-PRINT-MANAGER-PRO/releases/download/v2.5.0/Setup_R3D_PrintManager_Pro.exe');
+    }
+
+    // ── Admin: Estatísticas de downloads ────────────────────────────────────────
+    if (url.includes('/api/admin/stats') && method === 'GET') {
+      if (!isAdmin) return res.status(401).json({ message: 'Senha incorreta' });
+      const downloads = await fsGet('stats', 'downloads') || { total: 0 };
+      return res.json({ downloads });
     }
 
     console.warn(`[API] 404 Not Found: ${method} ${url}`);
