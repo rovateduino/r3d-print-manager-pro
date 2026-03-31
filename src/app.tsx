@@ -972,6 +972,7 @@ const AdminPanel = () => {
   const [showForm, setShowForm] = useState(false);
   const [selectedCupomId, setSelectedCupomId] = useState<string | null>(null);
   const [formData, setFormData] = useState({ codigo: '', tipo: 'PERCENTUAL', valor: 0, afiliado_nome: '', afiliado_email: '', afiliado_telefone: '', limite_usos: 0, validade: '', ativo: true });
+  const [downloadStats, setDownloadStats] = useState<{ total: number; ultimoDownload?: string; historico?: any[] } | null>(null);
 
   const [confirmConfig, setConfirmConfig] = useState<{ isOpen: boolean, title: string, message: string, onConfirm: () => Promise<void> } | null>(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
@@ -1010,7 +1011,10 @@ const AdminPanel = () => {
   };
 
   useEffect(() => {
-    if (isAuthenticated) fetchData();
+    if (isAuthenticated) {
+      fetchData();
+      fetchDownloadStats();
+    }
   }, [activeTab, isAuthenticated]);
 
   const handleBackup = async () => {
@@ -1043,6 +1047,20 @@ const AdminPanel = () => {
         if (!res.ok) throw new Error('Erro ao deletar ativação');
       }
     );
+  };
+
+  const fetchDownloadStats = async () => {
+    try {
+      const res = await fetch('/api/admin/stats', {
+        headers: { 'x-admin-password': password }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDownloadStats(data.downloads);
+      }
+    } catch (err) {
+      console.error('Erro ao buscar estatísticas de download:', err);
+    }
   };
 
   const handleResetActivation = (code: string) => {
@@ -1175,6 +1193,32 @@ const AdminPanel = () => {
           <button onClick={() => setActiveTab('activations')} className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all flex items-center gap-2 ${activeTab === 'activations' ? 'bg-[#C67D3D] text-white shadow-lg' : 'text-gray-500 hover:text-white'}`}><Zap className="w-4 h-4" />ATIVAÇÕES</button>
           <button onClick={() => setActiveTab('licenses')} className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all flex items-center gap-2 ${activeTab === 'licenses' ? 'bg-[#C67D3D] text-white shadow-lg' : 'text-gray-500 hover:text-white'}`}><Database className="w-4 h-4" />LICENÇAS</button>
         </div>
+
+        {/* Card de Estatísticas de Downloads */}
+        {downloadStats && (
+          <div className="mb-8 bg-gradient-to-r from-[#C67D3D]/10 to-[#EA580C]/10 border border-[#C67D3D]/20 p-8 rounded-[2.5rem]">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  <DownloadCloud className="w-8 h-8 text-[#C67D3D]" />
+                  <h2 className="text-2xl font-black text-white">Downloads do Aplicativo</h2>
+                </div>
+                <p className="text-gray-400 text-sm mb-4">Acompanhe quantas vezes seu aplicativo foi baixado</p>
+                <div className="text-5xl font-black text-[#C67D3D] mb-2">{downloadStats.total}</div>
+                <p className="text-gray-500 text-xs">
+                  {downloadStats.ultimoDownload 
+                    ? `Último download: ${new Date(downloadStats.ultimoDownload).toLocaleString('pt-BR')}`
+                    : 'Nenhum download registrado ainda'}
+                </p>
+              </div>
+              <div className="hidden md:block">
+                <div className="w-32 h-32 bg-[#C67D3D]/10 rounded-full flex items-center justify-center">
+                  <TrendingUp className="w-16 h-16 text-[#C67D3D]" />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {loading && <div className="flex justify-center py-20"><Loader2 className="w-10 h-10 text-[#C67D3D] animate-spin" /></div>}
 
@@ -1940,7 +1984,36 @@ export default function App() {
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#C67D3D]/5 to-transparent -z-10" />
         <div className="max-w-7xl mx-auto px-6">
           <div className="text-center mb-16"><h2 className="text-4xl md:text-6xl font-black mb-6">O Investimento que se <span className="text-[#C67D3D]">Paga Sozinho</span></h2><p className="text-gray-400 max-w-2xl mx-auto text-lg">PIX, Boleto ou Cartão em até 12x.</p></div>
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 items-stretch">
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6 items-stretch">
+            {/* Plano Semanal - R$ 5,00 */}
+            <div className="bg-[#1a1a1a] border border-white/5 p-8 rounded-[2.5rem] flex flex-col transition-all hover:border-[#C67D3D]/20">
+              <h3 className="text-lg font-bold mb-2">Plano Semanal</h3>
+              <div className="flex items-baseline gap-1 mb-1">
+                <span className="text-3xl font-black text-white">R$ 5,00</span>
+                <span className="text-gray-500 text-xs">/semana</span>
+              </div>
+              <div className="mb-6" /> {/* espaço vazio para alinhar com os outros */}
+              <ul className="space-y-3 mb-8 flex-grow">
+                <li className="flex items-center gap-3 text-xs text-gray-400">
+                  <CheckCircle2 className="text-[#C67D3D] w-4 h-4 shrink-0" />
+                  Todas as funções Pro
+                </li>
+                <li className="flex items-center gap-3 text-xs text-gray-400">
+                  <CheckCircle2 className="text-[#C67D3D] w-4 h-4 shrink-0" />
+                  Suporte WhatsApp
+                </li>
+                <li className="flex items-center gap-3 text-xs text-gray-400">
+                  <CheckCircle2 className="text-[#C67D3D] w-4 h-4 shrink-0" />
+                  1 Licença HWID
+                </li>
+              </ul>
+              <button
+                onClick={() => openCheckout('Semanal', 'R$ 5,00')}
+                className="w-full bg-white/5 hover:bg-white/10 text-white py-3 rounded-xl font-bold text-sm"
+              >
+                Assinar Agora
+              </button>
+            </div>
             {[
               { name: 'Mensal', price: 'R$ 59,90', sub: '/mês', features: ['Todas as funções', 'Suporte WhatsApp', '1 Licença HWID'] },
               { name: 'Trimestral', price: 'R$ 159,90', sub: '/trim', monthly: 'R$ 53,30 por mês', features: ['Economia de R$ 19,80', 'Todas as funções', 'Suporte WhatsApp'] },
