@@ -151,6 +151,8 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
   const [pixExpired, setPixExpired] = useState(false);
   const [fetchingPix, setFetchingPix] = useState(false);
   const [checkingManual, setCheckingManual] = useState(false);
+  const [manualCheckFeedback, setManualCheckFeedback] = useState<string | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState(false);
   const [pixTimeRemaining, setPixTimeRemaining] = useState<number | null>(null);
   const [currentPaymentId, setCurrentPaymentId] = useState<string | null>(null);
   const isMounted = useRef(true);
@@ -314,14 +316,12 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
         setSuccess(true); 
       } else { 
         console.log(`[PIX Debug] Pagamento ainda não detectado na verificação manual.`); 
-        const btn = document.getElementById('manual-check-btn'); 
-        if (btn && checkoutMounted.current) { 
-          const originalText = btn.innerText; 
-          btn.innerText = '⏳ AINDA PENDENTE...'; 
+        if (checkoutMounted.current) {
+          setManualCheckFeedback('⏳ AINDA PENDENTE...');
           setTimeout(() => { 
-            if (checkoutMounted.current && btn) btn.innerText = originalText; 
+            if (checkoutMounted.current) setManualCheckFeedback(null); 
           }, 2000); 
-        } 
+        }
       } 
     } catch (err) { 
       console.error('[PIX Debug] Erro na verificação manual:', err); 
@@ -644,7 +644,7 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
         </AnimatePresence>
 
         {success && (
-          <div className="text-center py-8">
+          <div key="success-view" className="text-center py-8">
             <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="w-10 h-10 text-green-500" /></div>
             <h2 className="text-2xl font-black text-white mb-2">Pagamento Confirmado!</h2>
             <p className="text-gray-400 mb-6 text-sm">Sua assinatura foi processada com sucesso.</p>
@@ -656,14 +656,12 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText((realCode || simulatedCode) as string);
-                    const btn = document.getElementById('copy-success-btn');
-                    if (btn) btn.innerText = 'COPIADO!';
-                    setTimeout(() => { if (btn) btn.innerText = 'COPIAR CÓDIGO'; }, 2000);
+                    setCopyFeedback(true);
+                    setTimeout(() => { if (checkoutMounted.current) setCopyFeedback(false); }, 2000);
                   }}
-                  id="copy-success-btn"
                   className="mt-3 text-[10px] text-[#C67D3D] font-bold hover:underline"
                 >
-                  COPIAR CÓDIGO
+                  <span>{copyFeedback ? 'COPIADO!' : 'COPIAR CÓDIGO'}</span>
                 </button>
               </div>
             )}
@@ -675,7 +673,7 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
         )}
 
         {pixData && !success && (
-          <div className="text-center py-4">
+          <div key="pix-view" className="text-center py-4">
             <QrCode className="w-10 h-10 text-[#C67D3D] mx-auto mb-3" />
             <h2 className="text-xl font-black text-white mb-1">Pague via PIX</h2>
             
@@ -715,7 +713,11 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
                 <p className="text-gray-400 text-sm mb-4">Escaneie o QR Code ou copie o código abaixo</p>
                 {pixData.qrCodeImage && (
                   <div className="bg-white p-4 rounded-2xl inline-block mb-4 relative">
-                    <img src={`data:image/png;base64,${pixData.qrCodeImage}`} alt="QR Code PIX" className="w-48 h-48 mx-auto" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                    <img 
+                      src={`data:image/png;base64,${pixData.qrCodeImage}`} 
+                      alt="QR Code PIX" 
+                      className="w-48 h-48 mx-auto" 
+                    />
                     {pixTimeRemaining !== null && (
                       <div className={`absolute bottom-2 right-2 px-2 py-1 rounded-md text-[9px] font-bold ${pixTimeRemaining < 60 ? 'bg-red-500 text-white animate-pulse' : 'bg-black/80 text-[#C67D3D]'}`}>
                         EXPIRA EM {Math.floor(pixTimeRemaining / 60)}:{(pixTimeRemaining % 60).toString().padStart(2, '0')}
@@ -732,13 +734,12 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
                     <Copy className="w-4 h-4" />COPIAR CÓDIGO PIX
                   </button>
                   <button 
-                    id="manual-check-btn"
                     onClick={checkPaymentStatus} 
-                    disabled={checkingManual}
+                    disabled={checkingManual || !!manualCheckFeedback}
                     className="w-full bg-white/5 hover:bg-white/10 text-white py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 border border-white/10"
                   >
                     {checkingManual ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCcw className="w-4 h-4" />}
-                    JÁ PAGUEI? VERIFICAR STATUS
+                    <span>{manualCheckFeedback || 'JÁ PAGUEI? VERIFICAR STATUS'}</span>
                   </button>
                   {import.meta.env.VITE_ASAAS_ENV !== 'production' && (
                     <button onClick={() => simulateActivation()} disabled={simulating} className="w-full bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 py-3 rounded-xl font-black border border-blue-500/30 transition-all flex items-center justify-center gap-2 text-sm">
@@ -768,7 +769,7 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
         )}
 
         {boletoUrl && !success && (
-          <div className="text-center py-4">
+          <div key="boleto-view" className="text-center py-4">
             <FileBarChart className="w-10 h-10 text-[#C67D3D] mx-auto mb-3" />
             <h2 className="text-xl font-black text-white mb-1">Boleto Gerado!</h2>
             <p className="text-gray-400 text-sm mb-6">Clique abaixo para abrir e pagar o boleto.</p>
@@ -788,7 +789,7 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
         )}
 
         {!success && !pixData && !boletoUrl && (
-          <>
+          <div key="form-view"><>
             {error && (
               <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl text-xs mb-4 flex items-center gap-2">
                 <X className="w-4 h-4 shrink-0" /><span>{error}</span>
@@ -975,7 +976,7 @@ const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, pl
                 Já realizou o pagamento? <button onClick={() => { onClose(); const el = document.getElementById('license-activation'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }} className="text-[#C67D3D] font-bold hover:underline">Recupere seu código aqui</button>
               </p>
             </div>
-          </>
+          </></div>
         )}
       </motion.div>
     </motion.div>
