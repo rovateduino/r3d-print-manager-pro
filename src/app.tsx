@@ -183,33 +183,54 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
     return () => { if (timer) clearInterval(timer); };
   }, [pixData, success, pixExpired]);
 
-  // Polling para verificar pagamento automaticamente
-  useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
-    // Só inicia polling se tiver um pagamento PIX pendente
-    if (polling && formData.email && !success && pixData) {
-      console.log(`[PIX Debug] Iniciando polling para ${formData.email} (Payment: ${currentPaymentId})`);
-      interval = setInterval(async () => {
-        if (!isMounted.current) return;
-        try {
-          const res = await fetch(`/api/user/status/${formData.email}`);
-          const data = await res.json();
-          if (!isMounted.current) return;
+  // Polling para verificar pagamento automaticamente 
+  useEffect(() => { 
+    let intervalId: NodeJS.Timeout | null = null; 
+    
+    // Só inicia polling se tiver um pagamento PIX pendente 
+    if (polling && formData.email && !success && pixData) { 
+      console.log(`[PIX Debug] Iniciando polling para ${formData.email} (Payment: ${currentPaymentId})`); 
+      
+      intervalId = setInterval(async () => { 
+        // Verificar se o componente ainda está montado 
+        if (!isMounted.current) { 
+          console.log('[PIX Debug] Componente desmontado, cancelando polling'); 
+          if (intervalId) clearInterval(intervalId); 
+          return; 
+        } 
+        
+        try { 
+          const res = await fetch(`/api/user/status/${formData.email}`); 
+          if (!res.ok) throw new Error(`HTTP ${res.status}`); 
+          const data = await res.json(); 
           
-          // Só confirma se o código de ativação corresponde ao pagamento atual
-          if (data.activationCode && data.paymentId === currentPaymentId) {
-            console.log(`[PIX Debug] Pagamento confirmado via polling! Código: ${data.activationCode}`);
-            setPolling(false);
-            setRealCode(data.activationCode);
-            setSuccess(true);
-          }
-        } catch (e) {
-          console.error(`[PIX Debug] Erro no polling:`, e);
-        }
-      }, 5000);
-    }
-    return () => { if (interval) clearInterval(interval); };
-  }, [polling, formData.email, success, pixData, currentPaymentId]);
+          // Verificar novamente se o componente ainda está montado 
+          if (!isMounted.current) return; 
+          
+          // Só confirma se o código de ativação corresponde ao pagamento atual 
+          if (data.activationCode && data.paymentId === currentPaymentId) { 
+            console.log(`[PIX Debug] Pagamento confirmado via polling! Código: ${data.activationCode}`); 
+            if (intervalId) clearInterval(intervalId); 
+            setPolling(false); 
+            setRealCode(data.activationCode); 
+            setSuccess(true); 
+          } else { 
+            console.log(`[PIX Debug] Pagamento ainda pendente...`); 
+          } 
+        } catch (e) { 
+          console.error(`[PIX Debug] Erro no polling:`, e); 
+          // Não fazer nada, apenas tentar novamente no próximo intervalo 
+        } 
+      }, 5000); 
+    } 
+    
+    return () => { 
+      if (intervalId) { 
+        console.log('[PIX Debug] Limpando intervalo de polling'); 
+        clearInterval(intervalId); 
+      } 
+    }; 
+  }, [polling, formData.email, success, pixData, currentPaymentId]); 
 
   // Resetar userStatus quando email mudar
   useEffect(() => {
@@ -218,34 +239,57 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
     }
   }, [formData.email]);
 
-  const checkPaymentStatus = async () => {
-    if (!formData.email) return;
-    setCheckingManual(true);
-    console.log(`[PIX Debug] Verificação manual solicitada para ${formData.email}`);
-    try {
-      const res = await fetch(`/api/user/status/${formData.email}`);
-      const data = await res.json();
-      if (!isMounted.current) return;
-      if (data.activationCode && data.paymentId === currentPaymentId) {
-        console.log(`[PIX Debug] Pagamento confirmado manualmente!`);
-        setPolling(false);
-        setRealCode(data.activationCode);
-        setSuccess(true);
-      } else {
-        console.log(`[PIX Debug] Pagamento ainda não detectado na verificação manual.`);
-        const btn = document.getElementById('manual-check-btn');
-        if (btn) {
-          const originalText = btn.innerText;
-          btn.innerText = 'AINDA PENDENTE...';
-          setTimeout(() => { if (isMounted.current && btn) btn.innerText = originalText; }, 2000);
-        }
-      }
-    } catch (e) {
-      console.error(`[PIX Debug] Erro na verificação manual:`, e);
-    } finally {
-      if (isMounted.current) setCheckingManual(false);
-    }
-  };
+  const checkPaymentStatus = async () => { 
+    if (!formData.email) { 
+      setError('E-mail não informado'); 
+      return; 
+    } 
+    setCheckingManual(true); 
+    console.log(`[PIX Debug] Verificação manual solicitada para ${formData.email}`); 
+    
+    try { 
+      const res = await fetch(`/api/user/status/${formData.email}`); 
+      if (!res.ok) { 
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`); 
+      } 
+      const data = await res.json(); 
+      
+      // IMPORTANTE: Verificar se o componente ainda está montado ANTES de atualizar o estado 
+      if (!isMounted.current) { 
+        console.log('[PIX Debug] Componente desmontado, ignorando atualização'); 
+        return; 
+      } 
+      
+      if (data.activationCode && data.paymentId === currentPaymentId) { 
+        console.log(`[PIX Debug] Pagamento confirmado manualmente! Código: ${data.activationCode}`); 
+        setPolling(false); 
+        setRealCode(data.activationCode); 
+        setSuccess(true); 
+      } else { 
+        console.log(`[PIX Debug] Pagamento ainda não detectado na verificação manual.`); 
+        // NÃO atualizar o error para não atrapalhar a experiência 
+        const btn = document.getElementById('manual-check-btn'); 
+        if (btn && isMounted.current) { 
+          const originalText = btn.innerText; 
+          btn.innerText = '⏳ AINDA PENDENTE...'; 
+          setTimeout(() => { 
+            if (isMounted.current && btn) btn.innerText = originalText; 
+          }, 2000); 
+        } 
+      } 
+    } catch (err) { 
+      console.error('[PIX Debug] Erro na verificação manual:', err); 
+      if (isMounted.current) { 
+        setError('Erro ao verificar pagamento. Tente novamente em alguns segundos.'); 
+        // Limpar o erro após 5 segundos 
+        setTimeout(() => { 
+          if (isMounted.current) setError(null); 
+        }, 5000); 
+      } 
+    } finally { 
+      if (isMounted.current) setCheckingManual(false); 
+    } 
+  }; 
 
   const simulateActivation = async () => {
     if (!formData.email) {
