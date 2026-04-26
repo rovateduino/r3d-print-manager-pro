@@ -127,7 +127,8 @@ const TestimonialCard = ({ name, role, content, rating }: { name: string, role: 
 // ─── Checkout Modal ───────────────────────────────────────────────────────────
 type PaymentMethod = 'CREDIT_CARD' | 'PIX' | 'BOLETO';
 
-const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: string, price: string } }) => {
+const CheckoutModal = ({ onClose, plan: initialPlan }: { onClose: () => void, plan: { name: string, price: string } }) => {
+  const [plan, setPlan] = useState(initialPlan);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState(1);
   const [error, setError] = useState<string | null>(null);
@@ -154,10 +155,56 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
   const [currentPaymentId, setCurrentPaymentId] = useState<string | null>(null);
   const isMounted = useRef(true);
 
+  // Estados de persistência
+  const [isPaymentActive, setIsPaymentActive] = useState(false);
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+
   useEffect(() => {
     isMounted.current = true;
     return () => { isMounted.current = false; };
   }, []);
+
+  // Persistência com sessionStorage
+  useEffect(() => {
+    if (pixData || boletoUrl) {
+      sessionStorage.setItem('checkout_state', JSON.stringify({
+        plan, pixData, boletoUrl, currentPaymentId, formData, step
+      }));
+      setIsPaymentActive(true);
+    } else {
+      setIsPaymentActive(false);
+    }
+  }, [pixData, boletoUrl, currentPaymentId, plan, formData, step]);
+
+  // Recuperar ao montar
+  useEffect(() => {
+    const saved = sessionStorage.getItem('checkout_state');
+    if (saved) {
+      try {
+        const state = JSON.parse(saved);
+        if (state.plan) setPlan(state.plan);
+        if (state.pixData) setPixData(state.pixData);
+        if (state.boletoUrl) setBoletoUrl(state.boletoUrl);
+        if (state.currentPaymentId) setCurrentPaymentId(state.currentPaymentId);
+        if (state.formData) setFormData(state.formData);
+        if (state.step) setStep(state.step);
+        // Retomar polling se for PIX ou Boleto
+        if (state.pixData || state.boletoUrl) setPolling(true);
+      } catch (e) {
+        console.error('Erro ao recuperar estado do checkout:', e);
+      }
+    }
+  }, []);
+
+  // Função de fechamento segura
+  const handleClose = () => {
+    if (isPaymentActive && !success) {
+      setShowCloseConfirm(true);
+      return;
+    }
+    sessionStorage.removeItem('checkout_state');
+    onClose();
+  };
 
   // Timer de expiração do PIX
   useEffect(() => {
@@ -347,8 +394,8 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
       if (response.ok && data.code) {
         setSimulatedCode(data.code);
         setSuccess(true);
-        setPixData(null);
-        setBoletoUrl(null);
+        // setPixData(null); // REMOVIDO
+        // setBoletoUrl(null); // REMOVIDO
       } else {
         setError(data.message || 'Erro na simulação');
       }
@@ -502,12 +549,12 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
               }
             }
           } catch (pixErr) {
-            console.error('[PIX Debug] Erro ao buscar QR Code:', pixErr);
-            if (isMounted.current) {
-              setError('Erro ao gerar QR Code PIX. Por favor, tente novamente ou use outro método.');
-              setPixData(null);
-            }
-          } finally {
+      console.error('[PIX Debug] Erro ao buscar QR Code:', pixErr);
+      if (isMounted.current) {
+        setError('Erro ao gerar QR Code PIX. Por favor, tente novamente ou use outro método.');
+        // setPixData(null); // REMOVIDO para não limpar o estado e fechar o modal
+      }
+    } finally {
             if (isMounted.current) setFetchingPix(false);
           }
         } else {
@@ -545,7 +592,14 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div onClick={onClose} className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
+      <div 
+        onClick={() => {
+          if (!isPaymentActive || success) {
+            handleClose();
+          }
+        }} 
+        className={`absolute inset-0 bg-black/80 backdrop-blur-sm ${isPaymentActive && !success ? 'cursor-default' : 'cursor-pointer'}`} 
+      />
       <motion.div initial={{ opacity: 0, scale: 0.9, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, y: 20 }} className="bg-[#1a1a1a] border border-white/10 w-full max-w-lg rounded-[2.5rem] p-8 relative z-10 overflow-y-auto max-h-[95vh]">
         <div className="absolute top-0 right-0 w-32 h-32 bg-[#C67D3D]/10 blur-3xl rounded-full pointer-events-none" />
 
@@ -569,8 +623,45 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
               </div>
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-2 cursor-pointer"><X className="w-5 h-5" /></button>
+          <button onClick={handleClose} className="text-gray-500 hover:text-white p-2 cursor-pointer"><X className="w-5 h-5" /></button>
         </div>
+
+        {/* Modal de Confirmação de Fechamento */}
+        <AnimatePresence>
+          {showCloseConfirm && (
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }} 
+              animate={{ opacity: 1, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="absolute inset-0 z-[110] bg-[#1a1a1a]/95 backdrop-blur-md flex items-center justify-center p-6 text-center rounded-[2.5rem]"
+            >
+              <div className="max-w-xs">
+                <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 text-red-500">
+                  <AlertTriangle className="w-8 h-8" />
+                </div>
+                <h3 className="text-xl font-black text-white mb-2">Deseja cancelar?</h3>
+                <p className="text-gray-400 text-sm mb-6">Pagamento em andamento. Tem certeza que deseja cancelar? O QR Code será perdido.</p>
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => setShowCloseConfirm(false)} 
+                    className="flex-1 bg-white/5 hover:bg-white/10 text-white py-3 rounded-xl font-bold text-sm transition-all"
+                  >
+                    CONTINUAR
+                  </button>
+                  <button 
+                    onClick={() => {
+                      sessionStorage.removeItem('checkout_state');
+                      onClose();
+                    }} 
+                    className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-500 py-3 rounded-xl font-bold text-sm border border-red-500/30 transition-all"
+                  >
+                    CANCELAR
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {success && (
           <div className="text-center py-8">
@@ -598,7 +689,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
             )}
             <div className="space-y-3">
               <a href="https://api.whatsapp.com/send?phone=5511951161563&text=Ol%C3%A1+Acabei+de+assinar+um+plano%2C+como+proceder+agora%3F" target="_blank" rel="noopener noreferrer" className="w-full bg-[#25D366] hover:bg-[#128C7E] text-white py-3 rounded-2xl font-black transition-all flex items-center justify-center gap-2"><MessageCircle className="w-5 h-5" />FALAR NO WHATSAPP</a>
-              <button onClick={onClose} className="w-full bg-white/5 hover:bg-white/10 text-white py-3 rounded-2xl font-black transition-all">FECHAR</button>
+              <button onClick={handleClose} className="w-full bg-white/5 hover:bg-white/10 text-white py-3 rounded-2xl font-black transition-all">FECHAR</button>
             </div>
           </div>
         )}
@@ -625,7 +716,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
                 </div>
                 <button 
                   onClick={() => {
-                    setPixData(null);
+                    // setPixData(null); // REMOVIDO para não fechar sozinho
                     setPixExpired(false);
                     setStep(3);
                   }} 
@@ -692,7 +783,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
                 </div>
               </>
             )}
-            <button onClick={onClose} className="w-full mt-4 bg-white/5 text-white py-3 rounded-xl font-bold text-sm">CANCELAR E FECHAR</button>
+            <button onClick={handleClose} className="w-full mt-4 bg-white/5 text-white py-3 rounded-xl font-bold text-sm">CANCELAR E FECHAR</button>
           </div>
         )}
 
@@ -712,7 +803,7 @@ const CheckoutModal = ({ onClose, plan }: { onClose: () => void, plan: { name: s
               )}
             </div>
             <p className="text-[10px] text-gray-500 my-4">Vencimento em 1 dia útil. Acesso liberado após compensação.</p>
-            <button onClick={onClose} className="w-full bg-white/5 text-white py-3 rounded-xl font-bold text-sm">FECHAR</button>
+            <button onClick={handleClose} className="w-full bg-white/5 text-white py-3 rounded-xl font-bold text-sm">FECHAR</button>
           </div>
         )}
 
